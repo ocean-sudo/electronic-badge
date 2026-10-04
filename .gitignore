@@ -1,0 +1,18 @@
+# Local environment configuration; publish only the safe root template.
+.env
+.env.*
+!/.env.example
+.venv/
+venv/
+
+# Generated build and Python artifacts.
+.pio/
+__pycache__/
+*.py[cod]
+
+# Local firmware/photo backups, device snapshots and verification evidence.
+/backups/
+/verification/
+
+# Official upstream checkout: fetch the pinned revision described in README.md.
+/vendor/
