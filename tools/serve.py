@@ -28,11 +28,14 @@ from serial.tools import list_ports
 WIDTH = HEIGHT = 466
 FRAME_BYTES = WIDTH * HEIGHT * 2
 CHUNK_BYTES = 4096
-SLOT_COUNT = 50
-MENU_ACTIONS = frozenset({"slideshow", "interval_down", "interval_up",
-                          "brightness_down", "brightness_up", "next", "sleep", "back",
-                          "timeout", "main", "usb_sleep_down", "usb_sleep_up",
-                          "battery_sleep_down", "battery_sleep_up", "animation",
+MIN_SLOT = 0
+MAX_SLOT = 2147483646
+MAX_BLOB_BYTES = 64 * 1024 * 1024
+JPEG_TAG = b"\xff\xfe\x00\x0fBDGJ1"
+MENU_ACTIONS = frozenset({"playback", "display", "timeout", "animation", "main",
+                          "slideshow", "shuffle", "interval_down", "interval_up",
+                          "brightness_down", "brightness_up", "previous", "next", "sleep", "back",
+                          "usb_sleep_down", "usb_sleep_up", "battery_sleep_down", "battery_sleep_up",
                           "transition_next", "motion_next", "rotation_faster", "rotation_slower"})
 # Espressif ESP32-S3 native USB Serial/JTAG and USB CDC identifiers.
 USB_IDS = {(0x303A, 0x1001), (0x303A, 0x0002)}
@@ -143,16 +146,22 @@ class Badge:
                 if startup and not response.startswith("ERR "):
                     continue
                 self._response_error(response)
-            if not isinstance(status, dict) or status.get("firmware") != "picture-badge-1":
+            if not isinstance(status, dict) or status.get("firmware") != "picture-badge-2":
                 if startup:
                     continue
-                raise BridgeError("firmware", "设备未运行兼容的 picture-badge-1 固件。", 502)
+                raise BridgeError("firmware", "设备未运行兼容的 picture-badge-2 固件。", 502)
             if status.get("width") != WIDTH or status.get("height") != HEIGHT:
                 raise BridgeError("firmware", "设备图片尺寸与 466 × 466 协议不一致。", 502)
+            revision = status.get("catalog_revision")
+            if type(revision) is not int or not 0 <= revision <= 0xFFFFFFFF:
+                raise BridgeError("protocol", "设备返回了无效的图片目录版本。", 502)
+            for name in ("image_count", "storage_total_bytes", "storage_used_bytes", "storage_free_bytes", "storage_reserve_bytes"):
+                if type(status.get(name)) is not int or status[name] < 0:
+                    raise BridgeError("protocol", "设备返回了无效的存储汇总。", 502)
             return status
 
-    def _read_frame(self, command):
-        deadline = time.monotonic() + 90
+    def _read_data(self, command, maximum, timeout=90):
+        deadline = time.monotonic() + timeout
         self._command(command)
         response = self._line(min(deadline, time.monotonic() + 10))
         fields = response.split()
@@ -161,35 +170,101 @@ class Badge:
         try:
             size, expected_crc = int(fields[1]), int(fields[2])
         except ValueError as exc:
-            raise BridgeError("protocol", "设备返回了无效的图片长度或校验码。", 502) from exc
-        if size != FRAME_BYTES or not 0 <= expected_crc <= 0xFFFFFFFF:
-            raise BridgeError("protocol", "设备返回了无效的图片长度或校验码。", 502)
-        image = bytearray()
+            raise BridgeError("protocol", "设备返回了无效的数据长度或校验码。", 502) from exc
+        if not 0 <= size <= maximum or not 0 <= expected_crc <= 0xFFFFFFFF:
+            raise BridgeError("protocol", "设备返回了超出范围的数据长度或校验码。", 502)
+        data = bytearray()
         idle_deadline = time.monotonic() + 10
-        while len(image) < size:
+        while len(data) < size:
             if time.monotonic() >= min(deadline, idle_deadline):
-                raise BridgeError("timeout", "图片读取超时。请检查 USB 连接后重试。", 504)
-            chunk = self.port.read(min(CHUNK_BYTES, size - len(image)))
+                raise BridgeError("timeout", "设备数据读取超时。请检查 USB 连接后重试。", 504)
+            chunk = self.port.read(min(CHUNK_BYTES, size - len(data)))
             if chunk:
-                image.extend(chunk)
+                data.extend(chunk)
                 idle_deadline = time.monotonic() + 10
         self._expect("", min(deadline, time.monotonic() + 10))
         self._expect("OK", min(deadline, time.monotonic() + 10))
-        if zlib.crc32(image) != expected_crc:
-            raise BridgeError("checksum", "读取的图片校验失败，请重试。", 502)
-        return bytes(image), expected_crc
+        if zlib.crc32(data) != expected_crc:
+            raise BridgeError("checksum", "设备数据传输校验失败，请重试。", 502)
+        return bytes(data), expected_crc
+
+    def _jpeg_limit(self):
+        status = self._status()
+        return max(0, status["storage_total_bytes"] - status["storage_reserve_bytes"])
+
+    @staticmethod
+    def _validate_jpeg(image, transfer_crc=None, maximum=0xFFFFFFFF):
+        if len(image) < 21 or len(image) > maximum or image[:2] != b"\xff\xd8" or image[2:11] != JPEG_TAG or image[-2:] != b"\xff\xd9":
+            raise BridgeError("jpeg", "图片不是徽章支持的带校验 JPEG 文件。", 400)
+        if int.from_bytes(image[11:15], "little") != len(image):
+            raise BridgeError("jpeg", "JPEG 内记录的文件长度不正确。", 400)
+        expected = int.from_bytes(image[15:19], "little")
+        normalized_crc = zlib.crc32(image[:15])
+        normalized_crc = zlib.crc32(b"\0\0\0\0", normalized_crc)
+        normalized_crc = zlib.crc32(memoryview(image)[19:], normalized_crc) & 0xFFFFFFFF
+        if normalized_crc != expected:
+            raise BridgeError("checksum", "JPEG 文件完整性校验失败。", 400)
+        if transfer_crc is not None and zlib.crc32(image) != transfer_crc:
+            raise BridgeError("checksum", "JPEG 传输校验失败。", 400)
+        return expected
+
+    def _read_jpeg(self, slot):
+        maximum = self._jpeg_limit()
+        data, transfer_crc = self._read_data(f"GET {slot}", maximum)
+        self._validate_jpeg(data, transfer_crc, maximum)
+        return data, transfer_crc
+
+    def _read_frame(self, command):
+        data, expected_crc = self._read_data(command, FRAME_BYTES)
+        if len(data) != FRAME_BYTES:
+            raise BridgeError("protocol", "设备返回了无效的 RGB565 画面长度。", 502)
+        return data, expected_crc
+
+    def _read_catalog(self):
+        data, _ = self._read_data("LIST", MAX_BLOB_BYTES)
+        try:
+            catalog = json.loads(data)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise BridgeError("protocol", "设备图片目录不是有效 JSON。", 502) from exc
+        revision = catalog.get("revision") if isinstance(catalog, dict) else None
+        if type(revision) is not int or not 0 <= revision <= 0xFFFFFFFF or not isinstance(catalog.get("images"), list):
+            raise BridgeError("protocol", "设备返回了无效的图片目录。", 502)
+        images, ids = [], set()
+        for image in catalog["images"]:
+            if not isinstance(image, dict):
+                raise BridgeError("protocol", "设备图片目录包含无效条目。", 502)
+            slot, size, crc = image.get("slot"), image.get("bytes"), image.get("crc32")
+            if type(slot) is not int or not MIN_SLOT <= slot <= MAX_SLOT or slot in ids or type(size) is not int or size < 21 or size > 0xFFFFFFFF or type(crc) is not int or not 0 <= crc <= 0xFFFFFFFF:
+                raise BridgeError("protocol", "设备图片目录条目超出有效范围。", 502)
+            ids.add(slot)
+            images.append({"slot": slot, "bytes": size, "crc32": crc})
+        return {"revision": catalog["revision"], "images": sorted(images, key=lambda image: image["slot"])}
 
     def _put_image(self, slot, image):
+        self._validate_jpeg(image, maximum=self._jpeg_limit())
+        transfer_crc = zlib.crc32(image)
+        target = "AUTO" if slot is None else str(slot)
         deadline = time.monotonic() + 90
-        self._command(f"PUT {slot} {len(image)} {zlib.crc32(image)}")
+        self._command(f"PUT {target} {len(image)} {transfer_crc}")
         self._expect("READY", min(deadline, time.monotonic() + 10))
         for offset in range(0, len(image), CHUNK_BYTES):
             if time.monotonic() >= deadline:
                 raise BridgeError("timeout", "图片上传超时；未完成的上传不会替换原图片。", 504)
             self._write(image[offset:offset + CHUNK_BYTES])
             self._expect("ACK", min(deadline, time.monotonic() + 10))
-        # Commit and readback validation share the transaction's full deadline.
-        self._expect("OK", deadline)
+        response = self._line(deadline)
+        fields = response.split()
+        if len(fields) != 2 or fields[0] != "OK":
+            self._response_error(response)
+        try:
+            committed_slot = int(fields[1])
+        except ValueError as exc:
+            raise BridgeError("protocol", "设备确认了无效的图片槽位。", 502) from exc
+        if not MIN_SLOT <= committed_slot <= MAX_SLOT:
+            raise BridgeError("protocol", "设备确认的图片槽位超出范围。", 502)
+        if slot is not None and committed_slot != slot:
+            raise BridgeError("protocol", "设备确认的图片槽位与请求不一致。", 502)
+        return {"ok": True, "slot": committed_slot, "crc32": transfer_crc}
 
     def transact(self, operation, *args):
         with self.lock:
@@ -197,19 +272,22 @@ class Badge:
                 self._connect()
                 if operation == "status":
                     return self._status()
+                if operation == "catalog":
+                    return self._read_catalog()
+                if operation == "jpeg_limit":
+                    return self._jpeg_limit()
                 if operation == "get":
-                    return self._read_frame(f"GET {args[0]}")
+                    return self._read_jpeg(args[0])
                 if operation == "menu_frame":
                     return self._read_frame("MENUFRAME")
                 if operation == "display_frame":
                     return self._read_frame("DISPLAYFRAME")
                 if operation == "put":
-                    self._put_image(*args)
-                else:
-                    self._command(operation)
-                    self._expect("OK", time.monotonic() + 15)
-                    if operation == "REBOOT":
-                        self._close()
+                    return self._put_image(*args)
+                self._command(operation)
+                self._expect("OK", time.monotonic() + 15)
+                if operation == "REBOOT":
+                    self._close()
                 return {"ok": True}
             except BridgeError:
                 self._close()
@@ -230,7 +308,7 @@ class Server(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "PictureBadge/1"
+    server_version = "PictureBadge/2"
 
     def setup(self):
         super().setup()
@@ -296,14 +374,16 @@ class Handler(BaseHTTPRequestHandler):
             raise BridgeError("value", f"{label}必须是 {lower}～{upper} 的整数。", 400)
         return value
 
-    def _slot(self, query):
+    def _slot(self, query, allow_auto=False):
         params = parse_qs(query, keep_blank_values=True)
         if set(params) != {"slot"} or len(params["slot"]) != 1:
-            raise BridgeError("slot", f"请指定唯一的图片槽位 slot（0～{SLOT_COUNT - 1}）。", 400)
+            raise BridgeError("slot", "请指定唯一的图片槽位 slot。", 400)
         value = params["slot"][0]
-        if len(value) > 2 or not value.isascii() or not value.isdecimal():
-            raise BridgeError("slot", f"图片槽位必须是 0～{SLOT_COUNT - 1} 的整数。", 400)
-        return self._integer(int(value), 0, SLOT_COUNT - 1, "图片槽位")
+        if allow_auto and value == "auto":
+            return None
+        if not value or not value.isascii() or not value.isdecimal() or len(value) > 10:
+            raise BridgeError("slot", "图片槽位必须是 0～2147483646 的整数。", 400)
+        return self._integer(int(value), MIN_SLOT, MAX_SLOT, "图片槽位")
 
     def _dispatch(self, mutation):
         self._security(mutation)
@@ -316,9 +396,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/api/status" and not url.query:
                 self._reply(200, self.server.badge.transact("status"))
+            elif path == "/api/catalog" and not url.query:
+                catalog = self.server.badge.transact("catalog")
+                self._reply(200, {"catalog_revision": catalog["revision"], "images": catalog["images"]})
             elif path == "/api/image":
                 image, crc = self.server.badge.transact("get", self._slot(url.query))
-                self._reply(200, image, "application/octet-stream", {"X-CRC32": crc})
+                self._reply(200, image, "image/jpeg", {"X-CRC32": crc})
             elif path == "/api/menu-image" and not url.query:
                 image, crc = self.server.badge.transact("menu_frame")
                 self._reply(200, image, "application/octet-stream", {"X-CRC32": crc})
@@ -329,15 +412,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise BridgeError("not_found", "没有这个页面或接口。", 404)
             return
         if path == "/api/image":
-            slot = self._slot(url.query)
-            if self.headers.get_content_type() != "application/octet-stream":
-                raise BridgeError("type", "图片必须使用 application/octet-stream 二进制上传。", 415)
-            image = self._body(FRAME_BYTES)
-            if len(image) != FRAME_BYTES:
-                raise BridgeError("image_size", f"图片必须为 466 × 466 RGB565，共 {FRAME_BYTES} 字节。", 400)
+            slot = self._slot(url.query, allow_auto=True)
+            if self.headers.get_content_type() != "image/jpeg":
+                raise BridgeError("type", "图片必须使用 image/jpeg 二进制上传。", 415)
+            image = self._body(self.server.badge.transact("jpeg_limit"))
             result = self.server.badge.transact("put", slot, image)
         else:
-            if url.query or path not in {"/api/show", "/api/delete", "/api/next", "/api/brightness", "/api/sleep", "/api/reboot", "/api/slideshow", "/api/autosleep", "/api/animation", "/api/menu", "/api/menu-action"}:
+            if url.query or path not in {"/api/show", "/api/delete", "/api/next", "/api/previous", "/api/shuffle", "/api/brightness", "/api/sleep", "/api/reboot", "/api/slideshow", "/api/autosleep", "/api/animation", "/api/menu", "/api/menu-action"}:
                 raise BridgeError("not_found", "没有这个操作接口。", 404)
             if self.headers.get_content_type() != "application/json":
                 raise BridgeError("type", "操作参数必须为 JSON。", 415)
@@ -348,7 +429,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise BridgeError("json", "操作参数必须是 JSON 对象。", 400)
             if path in {"/api/show", "/api/delete"}:
-                slot = self._integer(data.get("slot"), 0, SLOT_COUNT - 1, "图片槽位")
+                slot = self._integer(data.get("slot"), MIN_SLOT, MAX_SLOT, "图片槽位")
                 command = ("SHOW" if path == "/api/show" else "DELETE") + f" {slot}"
             elif path == "/api/brightness":
                 value = self._integer(data.get("value"), 1, 180, "亮度")
@@ -362,6 +443,14 @@ class Handler(BaseHTTPRequestHandler):
                     raise BridgeError("value", "enabled 必须为 true 或 false。", 400)
                 interval = self._integer(data.get("interval"), 2, 3600, "自动切图间隔（秒）")
                 command = f"SLIDESHOW {int(data['enabled'])} {interval}"
+            elif path == "/api/shuffle":
+                if set(data) != {"enabled"} or type(data.get("enabled")) is not bool:
+                    raise BridgeError("value", "随机设置必须且只能包含 enabled（true 或 false）。", 400)
+                command = f"SHUFFLE {int(data['enabled'])}"
+            elif path == "/api/previous":
+                if data:
+                    raise BridgeError("value", "上一张操作参数必须为空 JSON 对象。", 400)
+                command = "PREVIOUS"
             elif path == "/api/autosleep":
                 usb_seconds = self._integer(data.get("usb_seconds"), 0, 86400, "插电自动熄屏时间（秒）")
                 battery_seconds = self._integer(data.get("battery_seconds"), 0, 86400, "电池自动熄屏时间（秒）")

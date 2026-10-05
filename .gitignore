@@ -12,6 +12,7 @@ __pycache__/
 
 # Local firmware/photo backups, device snapshots and verification evidence.
 /backups/
+/data/
 /verification/
 
 # Official upstream checkout: fetch the pinned revision described in README.md.

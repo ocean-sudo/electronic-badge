@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101927">
+  <meta name="description" content="USB 图片徽章：ESP32-S3 圆形图片徽章固件与本地网页控制台。">
+  <title>USB 图片徽章｜本地控制，随身展示</title>
+  <link rel="icon" href="assets/showcase.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#top">● USB 图片徽章</a>
+    <nav aria-label="主导航">
+      <a href="#features">功能</a>
+      <a href="#console">控制台预览</a>
+      <a href="#how">使用方式</a>
+      <a href="#limits">实测边界</a>
+      <a href="#safe">安全部署</a>
+      <a class="repo-link" href="https://github.com/ocean-sudo/electronic-badge">查看源码 ↗</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">ESP32-S3 · 圆形屏幕 · 本地控制</p>
+        <h1>让喜欢的画面，<br><em>成为随身徽章。</em></h1>
+        <p class="lede">为圆形图片徽章提供固件与本地网页控制台：在电脑上裁切、管理图片，由设备独立显示、轮播与熄屏。</p>
+        <a class="button" href="https://github.com/ocean-sudo/electronic-badge">浏览 GitHub 源码 ↗</a>
+        <p class="fine">适配 Waveshare ESP32-S3-Touch-AMOLED-1.75C</p>
+      </div>
+      <figure class="hero-art">
+        <img src="assets/showcase.svg" alt="原创几何合成插画；演示界面，合成素材，不连接真实设备">
+        <figcaption>演示界面 · 合成素材 · 不连接真实设备</figcaption>
+      </figure>
+    </section>
+
+    <div class="ribbon">浏览器裁切　·　JPEG 图片管理　·　设备端轮播　·　USB 串口控制</div>
+
+    <section class="section" id="features">
+      <p class="eyebrow">功能概览</p>
+      <h2>从电脑准备画面，设备负责展示。</h2>
+      <div class="cards">
+        <article>
+          <h3><span>01</span> 挑选与裁切</h3>
+          <p>导入 JPG、PNG 或 WebP，在圆形预览中调整构图。选择图片不会自动上传，明确确认后才传输。</p>
+        </article>
+        <article>
+          <h3><span>02</span> 设备端播放</h3>
+          <p>管理图片、亮度、动画与熄屏。轮播由固件执行，关闭电脑服务后仍可继续。</p>
+        </article>
+        <article>
+          <h3><span>03</span> 完整性校验</h3>
+          <p>图片传输带有 CRC 校验；网页可读取设备保存的 JPEG 成品，目录使用稳定 ID。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section console-section" id="console">
+      <p class="eyebrow">实际控制台 · 离线预览</p>
+      <h2>本机网页界面，不是云端控制器。</h2>
+      <p class="section-copy">截图来自项目实际控制台；裁切预览中的画面为原创合成素材。为保护设备，截图时未连接徽章，设备 API 请求在浏览器端拦截；因此状态显示未连接，上传不可用。该图不是实机照片，也不是模拟设备数据。</p>
+      <figure class="console-shot">
+        <picture>
+          <source media="(max-width: 620px)" srcset="assets/console-mobile.webp">
+          <img src="assets/console-desktop.webp" alt="项目实际网页控制台的合成图片裁切界面；离线演示、未连接设备" loading="lazy">
+        </picture>
+        <figcaption>离线裁切界面预览 · 合成素材 · 未连接设备</figcaption>
+      </figure>
+      <div class="shot-links">
+        <a href="assets/console-desktop.webp">查看桌面截图</a>
+        <a href="assets/console-mobile.webp">查看手机截图</a>
+      </div>
+    </section>
+
+    <section class="section how" id="how">
+      <div>
+        <p class="eyebrow">本地运行</p>
+        <h2>控制服务在你的电脑上。</h2>
+        <p>图片处理与 USB 串口服务只在用户本机运行。GitHub Pages 是静态项目介绍，不连接徽章，也不提供在线控制台。</p>
+        <ol>
+          <li>安装 Python 依赖并连接 USB</li>
+          <li>在本机启动服务并打开网页</li>
+          <li>裁切图片，确认后上传到徽章</li>
+        </ol>
+      </div>
+      <figure>
+        <img src="assets/architecture.svg" alt="本机浏览器通过 Python USB 串口服务连接图片徽章的结构图" loading="lazy">
+        <figcaption>控制链路留在本机；项目介绍页不接入设备。</figcaption>
+      </figure>
+    </section>
+
+    <section class="section limits" id="limits">
+      <p class="eyebrow">实测与边界</p>
+      <h2>说明能力，也说明限制。</h2>
+      <div class="stats">
+        <div><strong>466 × 466</strong><span>JPEG 成品画布</span></div>
+        <div><strong>0.85</strong><span>浏览器 Canvas 编码质量参数</span></div>
+        <div><strong>228–284 ms</strong><span>42 张自然照片解码路径实测</span></div>
+      </div>
+      <p>设备用 ESP32-S3 ROM 软件 TJpgDec 解码 JPEG。WebP 输入由浏览器转码，不由设备解码。解码测量含文件读取、CRC 校验及 RGB 转换；会随图片和 I/O 变化，不是性能保证。</p>
+    </section>
+
+    <section class="section safe" id="safe">
+      <div>
+        <p class="eyebrow">安全地开始</p>
+        <h2>推荐 AI 辅助部署，<br>而非一键刷机。</h2>
+        <p>仓库提供可复制的提示词与手动步骤。先逐条审阅命令；已有设备升级仅写应用分区，保留文件系统和设备设置。</p>
+      </div>
+      <aside class="safe-card">
+        <p>✓ 默认只监听本机回环地址</p>
+        <p>✓ 服务没有登录认证，不要公开暴露</p>
+        <p>✓ 旧 v1 图片需在升级前导出、备份并转换</p>
+        <a href="https://github.com/ocean-sudo/electronic-badge#ai-deployment">查看 AI 部署与迁移说明 →</a>
+      </aside>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <a class="brand" href="#top">● USB 图片徽章</a>
+    <span>合成演示素材 · 不含设备照片</span>
+    <a href="https://github.com/ocean-sudo/electronic-badge">GitHub 项目仓库 ↗</a>
+    <a href="assets/homepage-desktop.webp">桌面主页截图</a>
+    <a href="assets/homepage-mobile.webp">手机主页截图</a>
+  </footer>
+</body>
+</html>

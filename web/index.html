@@ -12,11 +12,12 @@
 .animation-config{display:grid;gap:12px;font-size:14px}.animation-config label{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.animation-config select{flex:1;max-width:260px}.animation-config input{width:90px;border:1px solid var(--line);border-radius:8px;padding:9px;font:inherit}.animation-config button{justify-self:start}input:disabled{opacity:.43;cursor:not-allowed}#animationStatus,#displaySnapshotStatus{white-space:pre-line;overflow-wrap:anywhere}@media(max-width:420px){.animation-config label{align-items:flex-start;flex-direction:column}.animation-config select{width:100%;max-width:none}.menu-actions{grid-template-columns:1fr}}
 .crop-card{align-self:start}.crop-workspace{display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:18px;align-items:start;margin:18px 0}.crop-editor-stage{display:flex;justify-content:center;align-items:center;min-height:220px;padding:16px;border-radius:12px;background:repeating-conic-gradient(#e8edf4 0% 25%,#f6f8fc 0% 50%) 0/16px 16px}.crop-source-frame{position:relative;width:100%;max-width:var(--crop-max-width,100%);user-select:none}.crop-source-frame img{display:block;width:100%;height:auto;pointer-events:none}.crop-shade{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.crop-selection{position:absolute;border:2px solid #4c9bff;cursor:move;touch-action:none;outline-offset:5px}.crop-round-guide{position:absolute;inset:-2px;border:1px solid #fff9;border-radius:50%;pointer-events:none}.crop-grid{position:absolute;inset:0;opacity:0;pointer-events:none}.crop-grid span{position:absolute;border-color:#fff9;border-style:dashed;border-width:0}.crop-grid span:nth-child(1){left:33.333%;top:0;bottom:0;border-left-width:1px}.crop-grid span:nth-child(2){left:66.667%;top:0;bottom:0;border-left-width:1px}.crop-grid span:nth-child(3){top:33.333%;left:0;right:0;border-top-width:1px}.crop-grid span:nth-child(4){top:66.667%;left:0;right:0;border-top-width:1px}.crop-selection.is-dragging .crop-grid{opacity:1}.crop-handle{position:absolute;width:32px;height:32px;padding:0;border:0;border-radius:0;background:transparent;transform:translate(-50%,-50%);touch-action:none}.crop-handle::after{content:"";position:absolute;width:12px;height:12px;top:50%;left:50%;transform:translate(-50%,-50%);border:2px solid #fff;background:var(--accent);border-radius:2px}.crop-handle:hover:not(:disabled){background:transparent}.crop-handle[data-crop-handle=nw]{left:0;top:0;cursor:nwse-resize}.crop-handle[data-crop-handle=ne]{left:100%;top:0;cursor:nesw-resize}.crop-handle[data-crop-handle=sw]{left:0;top:100%;cursor:nesw-resize}.crop-handle[data-crop-handle=se]{left:100%;top:100%;cursor:nwse-resize}.crop-selection[aria-disabled=true]{cursor:not-allowed;opacity:.65}.crop-selection:focus-visible{outline:3px solid #79a8ff}.crop-preview .circle{width:100%;margin:12px auto}.crop-preview p{font-size:12px;color:var(--muted);line-height:1.6}.crop-empty{color:var(--muted);font-size:13px;text-align:center;line-height:1.8}.crop-tools{margin-top:12px;gap:12px}#cropSize{font-size:12px;color:var(--muted)}@media(max-width:1000px){.crop-workspace{grid-template-columns:1fr}.crop-preview{max-width:180px;margin:auto;width:100%;text-align:center}}@media(pointer:coarse){.crop-handle{width:44px;height:44px}}
 .filebox.is-dragover{border-color:var(--accent);background:#e0eaff;outline:2px solid #79a8ff;outline-offset:2px}.filebox .hint{display:block;margin-top:10px}
+header{flex-wrap:wrap}.header-status{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;max-width:100%}.battery-pill{white-space:normal;line-height:1.5;font-variant-numeric:tabular-nums;max-width:100%}.battery-pill.charging{background:#e0f3eb;color:#12664b}@media(max-width:780px){header{gap:12px}.header-status{width:100%;justify-content:flex-start}}@media(max-width:600px){.catalog-heading{flex-wrap:wrap;align-items:flex-start}.catalog-heading #slotCount{flex:1 1 100%;text-align:left;overflow-wrap:anywhere}}
 </style>
 </head>
 <body>
 <main>
-<header><div><h1>把喜欢的画面，戴在身上</h1><p>466 × 466 圆形图片徽章 · USB 本地控制台</p></div><div id="connection" class="pill" role="status"><span class="dot"></span><span id="connectionText">正在连接</span></div></header>
+<header><div><h1>把喜欢的画面，戴在身上</h1><p>466 × 466 圆形图片徽章 · USB 本地控制台</p></div><div class="header-status"><div id="connection" class="pill" role="status"><span class="dot" aria-hidden="true"></span><span id="connectionText">正在连接</span></div><div id="batteryStatus" class="pill battery-pill" role="status" aria-live="polite" aria-atomic="true">电池状态未知 · 设备未连接</div></div></header>
 <div id="message" class="message" role="status" aria-live="polite" hidden></div>
 <div class="grid">
 <section class="card crop-card">
@@ -42,16 +43,16 @@
 <div class="row spread crop-tools"><output id="cropSize">输出 466 × 466</output><button id="resetCrop" disabled>居中重置</button></div>
 <div class="uploadrow"><select id="uploadSlot" aria-label="上传目标槽位"><option value="auto">自动选择空槽位</option></select><button id="upload" class="primary" disabled>上传到徽章</button></div>
 <div id="busybar" class="busybar" hidden></div>
-<p class="hint" style="margin-top:10px">每张约 424 KiB。上传完成后立即显示并保存；断电后仍会记住当前图片。</p>
+<p class="hint" style="margin-top:10px">输出为带完整性标签的 466 × 466 JPEG（编码质量参数 0.85），文件大小随图片内容变化；设备按实际存储容量分配 ID。上传后会从设备回读并校验。</p>
 </section>
 <div class="stack">
 <section class="card">
-<div class="row spread"><h2 style="margin:0">徽章里的图片</h2><span id="slotCount" class="hint">尚未连接</span></div>
+<div class="row spread catalog-heading"><h2 style="margin:0">徽章里的图片</h2><span id="slotCount" class="hint">尚未连接</span></div>
 <div id="slots" class="slots" role="group" aria-label="图片槽位"></div>
 <p class="hint">蓝色为已保存 · 绿点为正在显示 · 数字是槽位编号</p>
 <div class="divider"></div>
 <div class="saved-row"><div class="saved-preview"><canvas id="savedCanvas" width="466" height="466" aria-label="设备已保存图片预览"></canvas><div id="savedPlaceholder" class="placeholder">选择已保存的图片</div></div><div class="saved-info"><h3 id="selectedLabel">尚未选择</h3><p id="selectedInfo" class="muted">点击上方槽位，从设备读取图片。</p><div class="row"><button id="show" data-device disabled>显示此图</button><button id="delete" class="danger" data-device disabled>删除</button></div></div></div>
-<div class="row" style="margin-top:18px"><button id="next" class="primary" data-device disabled>切换下一张</button><button id="readback" data-device disabled>重新读取预览</button></div>
+<div class="row" style="margin-top:18px"><button id="previous" data-new disabled>返回上一张</button><button id="next" class="primary" data-device disabled>切换下一张</button><button id="readback" data-device disabled>重新读取预览</button></div>
 </section>
 <section class="card">
 <h2>设备控制</h2>
@@ -64,11 +65,12 @@
 <h2>自动切换图片</h2>
 <div class="slideshow-config">
 <label><input id="slideshowEnabled" type="checkbox" data-new disabled> 启用自动切图</label>
+<label><input id="shuffleEnabled" type="checkbox" data-new disabled> 随机顺序（每轮不重复）</label>
 <label for="slideshowInterval">间隔 <input id="slideshowInterval" type="number" min="2" max="3600" step="1" value="10" data-new disabled> 秒</label>
 <button id="applySlideshow" class="primary" data-new disabled>应用设置</button>
 </div>
 <div id="slideshowStatus" class="statusline" role="status">连接设备后读取自动切图设置。</div>
-<p class="hint">默认关闭、间隔 10 秒；可设 2～3600 秒，修改后点击应用。设置保存在徽章，关闭网页或拔掉 USB 后仍会自动切图。熄屏或打开菜单时暂停，返回后重新计时；至少需要两张图片。自动切图不逐次写 Flash，重启从上次手动选择开始。</p>
+<p class="hint">自动切图和随机顺序默认关闭，间隔 10 秒；可设 2～3600 秒，修改后点击应用。设置保存在徽章，关闭网页或拔掉 USB 后仍有效。随机顺序也用于手动下一张：新取图每轮遍历全部有效图片，两张以上不连续重复；人工回看和前进历史重放会重现旧图，但不改变洗牌进度。上一张回到实际播放历史（最多前 5 张）；返回后下一张先重放前进历史。历史仅在 RAM，重启清空并从上次手动选择开始。熄屏或打开菜单时暂停自动切图，返回后重新计时；至少需要两张图片。</p>
 </section>
 <section class="card">
 <h2>图片转场与持续运动</h2>
@@ -99,13 +101,17 @@
 <div class="stage"><div class="circle menu-preview"><canvas id="menuCanvas" width="466" height="466" aria-label="设备菜单实际像素预览"></canvas><div id="menuPlaceholder" class="placeholder">打开菜单后<br>从设备读取实际画面</div></div></div>
 <div class="row spread"><span id="menuStatus" class="hint" role="status">尚未读取菜单</span><button id="menuReadback" data-new disabled>读取 / 刷新菜单</button></div>
 <div class="menu-actions" role="group" aria-label="远程设备菜单操作">
+<button data-menu-action="playback" data-new disabled>打开播放设置页</button>
+<button data-menu-action="display" data-new disabled>打开显示设置页</button>
+<button data-menu-action="timeout" data-new disabled>打开熄屏设置页</button>
 <button data-menu-action="slideshow" data-new disabled>自动切图 开 / 关</button>
+<button data-menu-action="shuffle" data-new disabled>随机顺序 开 / 关</button>
+<button data-menu-action="previous" data-new disabled>返回上一张</button>
 <button data-menu-action="next" data-new disabled>切换下一张</button>
 <button data-menu-action="interval_down" data-new disabled>缩短间隔</button>
 <button data-menu-action="interval_up" data-new disabled>延长间隔</button>
 <button data-menu-action="brightness_down" data-new disabled>降低亮度</button>
 <button data-menu-action="brightness_up" data-new disabled>提高亮度</button>
-<button data-menu-action="timeout" data-new disabled>打开熄屏设置页</button>
 <button data-menu-action="usb_sleep_down" data-autosleep disabled>缩短插电熄屏时间</button>
 <button data-menu-action="usb_sleep_up" data-autosleep disabled>延长插电熄屏时间</button>
 <button data-menu-action="battery_sleep_down" data-autosleep disabled>缩短电池熄屏时间</button>
@@ -117,30 +123,40 @@
 <button data-menu-action="rotation_slower" data-animation disabled>旋转减慢</button>
 <button data-menu-action="main" data-new disabled>返回主菜单</button>
 <button data-menu-action="sleep" data-new disabled>熄屏并退出菜单</button>
-<button data-menu-action="back" data-new disabled>返回图片</button>
+<button data-menu-action="back" data-new disabled>返回上一级</button>
 </div>
-<p class="hint" style="margin-top:12px">图片界面向上滑动，或运行时短按 BOOT，可打开菜单。AUTO 是轮播开关，INTERVAL 是间隔，BRIGHTNESS 是亮度；NEXT / SLEEP / BACK 为切图 / 熄屏 / 返回。TIMEOUT 打开自动熄屏页，USB POWER / BATTERY 分别调整插电 / 电池超时，OFF 为不自动熄屏。ANIMATION 打开动画设置页，可切换转场、持续运动并调整旋转周期；设置页 BACK 返回主菜单。这里读取固件实际绘制的菜单，不是网页模拟；按钮与屏幕菜单共用操作。成功上传新图会退出菜单。</p>
+<p class="hint" style="margin-top:12px">图片界面左滑下一张、右滑上一张、上滑打开菜单；运行时短按 BOOT 也可打开或关闭菜单。主菜单分为 PLAYBACK（自动切图、随机、间隔及历史切图）、DISPLAY（亮度与 ANIMATION 动画页）、TIMEOUT（插电 / 电池闲置熄屏，OFF 为关闭）。各页顶部显示电池百分比与实际充电状态，不把 USB 连接当作充电。BACK 返回上一级（动画 → 显示 → 主菜单），主菜单 BACK 返回图片；任意菜单页下滑或点击上方「关闭设备菜单」直接关闭整个菜单。在屏幕左侧中部边缘起手向右滑也可返回上一级，按钮上起手不会触发边缘返回。这里回读固件实际菜单帧，不是网页模拟或光学屏幕回读；成功上传新图会退出菜单。</p>
 </section>
 </div>
 </div>
-<footer>无需 Wi-Fi · 无账号 · 无云服务<br>轻触切图；向上滑动或运行时短按 BOOT 打开菜单。长按约 1 秒熄屏，轻触唤醒。熄屏仅关闭显示，USB 连接保持可用。</footer>
+<footer>无需 Wi-Fi · 无账号 · 无云服务<br>轻触下一张；图片左滑下一张、右滑上一张、上滑打开菜单。菜单下滑关闭，左侧中部边缘向右滑返回上级。运行时短按 BOOT 开 / 关菜单；长按约 1 秒熄屏，轻触仅唤醒。熄屏仅关闭显示，USB 连接保持可用。</footer>
 </main>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const SIZE = 466, FRAME_BYTES = SIZE * SIZE * 2, SLOT_COUNT = 50;
+const SIZE = 466, FRAME_BYTES = SIZE * SIZE * 2;
 const crop = $('cropCanvas'), cropCtx = crop.getContext('2d', {willReadFrequently:true});
 const savedCtx = $('savedCanvas').getContext('2d');
 const menuCtx = $('menuCanvas').getContext('2d');
 const displayCtx = $('displayCanvas').getContext('2d');
 const transitionLabels = {direct:'直接切换', fade:'黑场淡变', slide:'水平推入'};
 const motionLabels = {off:'关闭运动', shift:'60 秒微移', rotate:'持续顺时针旋转', gravity:'重力跟随'};
+const menuPages = {
+  main: ['playback','display','timeout'],
+  playback: ['slideshow','shuffle','interval_down','interval_up','previous','next'],
+  display: ['brightness_down','brightness_up','animation'],
+  timeout: ['usb_sleep_down','usb_sleep_up','battery_sleep_down','battery_sleep_up'],
+  animation: ['transition_next','motion_next','rotation_faster','rotation_slower']
+};
+const menuPageLabels = {main:'主菜单',playback:'播放设置',display:'显示设置',timeout:'熄屏设置',animation:'动画设置'};
 let image = null, state = null, connected = false, busy = false, selected = null;
 let savedSlot = null, savedCRC = null, pollPromise = null, loadingFile = 0;
 let brightnessEditing = false, slideshowEditing = false, menuSnapshot = null, menuAttempt = null;
 let autosleepEditing = false;
 let animationEditing = false, displaySnapshot = null, displaySnapshotError = '';
-const slotButtons = [];
+let catalogRevision = null;
+let galleryImages = [];
+const slotButtons = new Map();
 const cropEditor = $('cropEditor'), cropSelection = $('cropSelection');
 let cropBox = null, cropDrag = null;
 const imageInput = $('imageInput');
@@ -152,6 +168,42 @@ function message(text, kind='') {
   $('message').hidden = !text;
 }
 function occupied(slot) { return !!state && state.slots.includes(slot); }
+function renderCatalog(catalog) {
+  if (!catalog || !Array.isArray(catalog.images) || !Number.isInteger(catalog.catalog_revision)) throw new Error('图片目录无效，请重新连接设备。');
+  const previousChoice = $('uploadSlot').value;
+  catalogRevision = catalog.catalog_revision;
+  galleryImages = catalog.images;
+  state = state || {};
+  state.slots = galleryImages.map(item => item.slot);
+  state.images = galleryImages;
+  const container = $('slots');
+  container.replaceChildren(); slotButtons.clear();
+  for (const item of galleryImages) {
+    const button = document.createElement('button');
+    button.className = 'slot occupied'; button.textContent = String(item.slot); button.disabled = !connected || busy;
+    button.addEventListener('click', () => {
+      if (busy) return;
+      selected = item.slot; clearSaved(); updateControls();
+      perform('正在从徽章读取槽位 ' + item.slot + '…', () => readImage(item.slot), '已从设备读取 JPEG 图片，完整性校验通过。');
+    });
+    container.append(button); slotButtons.set(item.slot, button);
+  }
+  const selector = $('uploadSlot'); selector.replaceChildren(new Option('自动使用设备分配的最小空 ID', 'auto'));
+  for (const item of galleryImages) selector.append(new Option('槽位 ' + item.slot + ' · 覆盖已有图片', String(item.slot)));
+  if ([...selector.options].some(option => option.value === previousChoice)) selector.value = previousChoice;
+  else selector.value = 'auto';
+  if (selected !== null && !occupied(selected) && savedSlot === selected) clearSaved('图片已删除。');
+  renderGallerySelection();
+}
+function renderGallerySelection() {
+  for (const [slot, button] of slotButtons) {
+    button.disabled = !connected || busy;
+    button.classList.toggle('selected', selected === slot);
+    button.classList.toggle('current', !!state && state.current === slot);
+    button.setAttribute('aria-pressed', String(selected === slot));
+    button.setAttribute('aria-label', '槽位 ' + slot + '，已保存' + (state && state.current === slot ? '，正在显示' : ''));
+  }
+}
 function clearSaved(text='这个槽位还没有图片') {
   savedCtx.clearRect(0, 0, SIZE, SIZE);
   savedSlot = savedCRC = null;
@@ -161,7 +213,9 @@ function clearSaved(text='这个槽位还没有图片') {
 function supportsMenu() {
   return !!state && typeof state.slideshow_enabled === 'boolean'
     && Number.isInteger(state.slideshow_interval) && state.slideshow_interval >= 2 && state.slideshow_interval <= 3600
-    && typeof state.slideshow_error === 'string' && typeof state.menu_open === 'boolean';
+    && typeof state.slideshow_error === 'string' && typeof state.menu_open === 'boolean'
+    && typeof state.shuffle_enabled === 'boolean' && typeof state.previous_available === 'boolean'
+    && Object.hasOwn(menuPages, state.menu_page);
 }
 function supportsAutosleep() {
   return !!state && ['usb','battery','unknown'].includes(state.power_source)
@@ -231,25 +285,46 @@ function menuVisible() { return connected && supportsMenu() && state.menu_open &
 function menuKey() {
   return JSON.stringify([state.menu_open, state.sleeping, state.slideshow_enabled, state.slideshow_interval,
     state.slideshow_error, state.brightness, state.current, state.slots, state.menu_page,
-    state.autosleep_usb_seconds, state.autosleep_battery_seconds, state.power_source,
-    state.transition_mode, state.motion_mode, state.rotation_period]);
+    state.autosleep_usb_seconds, state.autosleep_battery_seconds,
+    state.transition_mode, state.motion_mode, state.rotation_period,
+    state.shuffle_enabled, state.previous_available, state.pmu_ok,
+    state.battery_connected, state.battery_percent, state.battery_charging]);
 }
 function clearMenu() {
   menuCtx.clearRect(0, 0, SIZE, SIZE);
   menuSnapshot = null;
   menuAttempt = null;
 }
+function batteryLabel() {
+  if (!connected || !state) return '电池状态未知 · 设备未连接';
+  if (state.pmu_ok !== true || typeof state.battery_connected !== 'boolean') return '电池状态未知 · 充电状态未知';
+  if (!state.battery_connected) return '未连接电池';
+  const percent = state.battery_percent;
+  const level = Number.isInteger(percent) && percent >= 0 && percent <= 100 ? `电池 ${percent}%` : '电池电量未知';
+  const charging = state.battery_charging === true ? '充电中' : state.battery_charging === false ? '未充电' : '充电状态未知';
+  return `${level} · ${charging}`;
+}
 function updateControls() {
   $('connection').classList.toggle('connected', connected);
   $('connectionText').textContent = connected ? (busy ? '正在传输' : 'USB 已连接') : '未连接';
+  const battery = batteryLabel();
+  if ($('batteryStatus').textContent !== battery) $('batteryStatus').textContent = battery;
+  $('batteryStatus').classList.toggle('charging', connected && state?.pmu_ok === true && state.battery_connected === true && state.battery_charging === true);
   $('busybar').hidden = !busy;
   for (const el of document.querySelectorAll('[data-device]')) el.disabled = !connected || busy;
   for (const el of document.querySelectorAll('[data-new]')) el.disabled = !connected || busy || !supportsMenu();
   for (const el of document.querySelectorAll('[data-autosleep]')) el.disabled = !connected || busy || !supportsAutosleep();
   for (const el of document.querySelectorAll('[data-animation]')) el.disabled = !connected || busy || !supportsAnimation();
-  for (const el of document.querySelectorAll('[data-menu-action], #menuReadback')) {
-    el.disabled = busy || !menuVisible() || (el.hasAttribute('data-autosleep') && !supportsAutosleep())
-      || (el.hasAttribute('data-animation') && !supportsAnimation());
+  $('menuReadback').disabled = busy || !menuVisible();
+  for (const el of document.querySelectorAll('[data-menu-action]')) {
+    const action = el.dataset.menuAction;
+    const legal = supportsMenu() && (['back','main','sleep'].includes(action) || menuPages[state.menu_page].includes(action));
+    el.hidden = !legal || (action === 'main' && state.menu_page === 'main');
+    el.disabled = busy || !menuVisible() || !legal || (el.hasAttribute('data-autosleep') && !supportsAutosleep())
+      || (el.hasAttribute('data-animation') && !supportsAnimation())
+      || (action === 'previous' && !state?.previous_available)
+      || (action === 'next' && !state?.slots.length);
+    if (action === 'back') el.textContent = state?.menu_page === 'main' ? '返回图片' : '返回上一级';
   }
   const gravityUnavailable = gravityUnavailableReason();
   const gravityOption = $('animationMotion').querySelector('option[value="gravity"]');
@@ -266,7 +341,7 @@ function updateControls() {
   const menuFresh = menuVisible() && menuSnapshot === menuKey();
   $('menuPlaceholder').hidden = menuFresh;
   $('menuPlaceholder').textContent = !connected ? '设备未连接，预览不可用' : !supportsMenu() ? '需要更新徽章固件' : state.sleeping ? '屏幕已熄灭' : !state.menu_open ? '打开菜单后\n从设备读取实际画面' : '尚未读取最新菜单\n点击读取 / 刷新';
-  $('menuStatus').textContent = menuFresh ? '466 × 466 · 设备回读 CRC 校验通过' : '菜单预览尚未更新';
+  $('menuStatus').textContent = menuFresh ? `${menuPageLabels[state.menu_page]} · 466 × 466 · 设备回读 CRC 校验通过` : '菜单预览尚未更新';
   $('file').disabled = busy;
   $('uploadSlot').disabled = busy;
   $('resetCrop').disabled = !image || busy;
@@ -278,23 +353,14 @@ function updateControls() {
   $('upload').disabled = !connected || busy || !image || !state.storage_ok || !state.display_ok || (state.psram_ok === false);
   for (const id of ['show','delete','readback']) $(id).disabled = !connected || busy || selected === null || !occupied(selected);
   $('next').disabled = !connected || busy || !state || state.slots.length === 0;
+  $('previous').disabled = !connected || busy || !supportsMenu() || !state.previous_available;
   $('sleep').textContent = state && state.sleeping ? '唤醒屏幕' : '熄屏';
-  $('selectedLabel').textContent = selected === null ? '尚未选择' : `槽位 ${String(selected).padStart(2,'0')}`;
-  if (selected === null) $('selectedInfo').textContent = '点击上方槽位，从设备读取图片。';
+  $('selectedLabel').textContent = selected === null ? '尚未选择' : '槽位 ' + selected;
+  if (selected === null) $('selectedInfo').textContent = '点击已保存的图片，从设备读取 JPEG 预览。';
   else if (!connected) $('selectedInfo').textContent = '设备未连接；预览可能不是最新状态。';
-  else if (!occupied(selected)) $('selectedInfo').textContent = '空槽位，可以上传一张新图片。';
-  else $('selectedInfo').textContent = (state.current === selected ? '正在显示' : '已保存') + (savedSlot === selected ? ` · 校验 ${savedCRC.toString(16).padStart(8,'0')}` : ' · 尚未读取预览');
-  slotButtons.forEach((button, slot) => {
-    button.disabled = !connected || busy;
-    button.classList.toggle('occupied', occupied(slot));
-    button.classList.toggle('selected', selected === slot);
-    button.classList.toggle('current', !!state && state.current === slot);
-    button.setAttribute('aria-pressed', String(selected === slot));
-    button.setAttribute('aria-label', `槽位 ${slot}，${occupied(slot) ? '已保存' : '空'}${state && state.current === slot ? '，正在显示' : ''}`);
-  });
-  for (let slot=0; slot<SLOT_COUNT; slot++) {
-    $('uploadSlot').options[slot+1].textContent = `槽位 ${String(slot).padStart(2,'0')} · ${state ? (occupied(slot) ? '覆盖已有图片' : '空') : '等待连接'}`;
-  }
+  else if (!occupied(selected)) $('selectedInfo').textContent = '所选 ID 当前为空；上传到自动分配可使用最小空 ID。';
+  else $('selectedInfo').textContent = (state.current === selected ? '正在显示' : '已保存') + (savedSlot === selected ? ' · CRC ' + savedCRC.toString(16).padStart(8,'0') : ' · 尚未读取预览');
+  renderGallerySelection();
 }
 function renderState(next) {
   const previous = state;
@@ -302,7 +368,8 @@ function renderState(next) {
   connected = true;
   if (savedSlot !== null && (!occupied(savedSlot) || (next.current === savedSlot && next.current_crc32 !== savedCRC))) clearSaved('图片已更新，请重新读取预览');
   if (selected === null && next.current >= 0) selected = next.current;
-  $('slotCount').textContent = `${next.slots.length} / ${SLOT_COUNT} 张`;
+  const mib = value => (value / 1048576).toFixed(1) + ' MiB';
+  $('slotCount').textContent = next.image_count + ' 张 · 已用 ' + mib(next.storage_used_bytes) + ' / ' + mib(next.storage_total_bytes) + ' · 可用 ' + mib(next.storage_free_bytes) + '（保留 ' + mib(next.storage_reserve_bytes) + '）';
   if (!brightnessEditing) {
     $('brightness').value = next.brightness;
     $('brightnessOut').textContent = next.brightness;
@@ -311,6 +378,7 @@ function renderState(next) {
     if (!slideshowEditing && document.activeElement !== $('slideshowInterval')) {
       $('slideshowEnabled').checked = next.slideshow_enabled;
       $('slideshowInterval').value = next.slideshow_interval;
+      $('shuffleEnabled').checked = next.shuffle_enabled;
     }
     const status = next.slideshow_error ? `错误：${next.slideshow_error}`
       : !next.slideshow_enabled ? '已关闭'
@@ -318,10 +386,10 @@ function renderState(next) {
       : next.menu_open ? '已暂停：菜单打开'
       : next.slots.length < 2 ? '等待至少两张有效图片'
       : '正在自动切换';
-    $('slideshowStatus').textContent = `设备设置：${next.slideshow_enabled ? '启用' : '关闭'} · ${next.slideshow_interval} 秒 · ${status}`;
+    $('slideshowStatus').textContent = `设备设置：${next.slideshow_enabled ? '启用' : '关闭'} · ${next.slideshow_interval} 秒 · ${next.shuffle_enabled ? '随机顺序' : '槽位顺序'} · ${status}`;
     if (!next.menu_open || next.sleeping) clearMenu();
   } else {
-    $('slideshowStatus').textContent = '需要更新徽章固件：当前固件未提供自动切图与菜单接口。原有图片功能仍可使用。';
+    $('slideshowStatus').textContent = '需要更新徽章固件：当前固件未提供新版菜单、随机顺序与播放历史接口。原有图片功能仍可使用。';
     clearMenu();
   }
   if (supportsAutosleep()) {
@@ -348,8 +416,7 @@ function renderState(next) {
   if (next.psram_ok === false) health.push('PSRAM 异常');
   if (next.pmu_ok === false) health.push('电源管理异常');
   if (next.preferences_ok === false) health.push('设置存储异常');
-  const battery = next.battery_connected ? (next.battery_percent >= 0 ? `电池 ${next.battery_percent}%` : '电池电量未知') : '未连接电池';
-  $('deviceInfo').textContent = `${next.sleeping ? '屏幕已熄灭' : '屏幕已点亮'} · ${battery}\n${health.join(' · ')} · ${next.firmware}`;
+  $('deviceInfo').textContent = `${next.sleeping ? '屏幕已熄灭' : '屏幕已点亮'} · ${batteryLabel()}\n${health.join(' · ')} · ${next.firmware}`;
   $('deviceInfo').style.whiteSpace = 'pre-line';
   updateControls();
   if (!previous && !next.storage_ok) message('设备已连接，但图片存储异常。请查看设备固件与终端日志。', 'error');
@@ -379,11 +446,19 @@ async function api(path, options={}, binary=false) {
 async function refreshStatus(silent=false) {
   try {
     const next = await api('/api/status');
+    if (catalogRevision !== next.catalog_revision || !state) {
+      const catalog = await api('/api/catalog');
+      if (catalog.catalog_revision !== next.catalog_revision) throw new Error('图片目录在读取期间变化，请刷新。');
+      renderCatalog(catalog);
+    }
     const wasConnected = connected;
+    next.slots = galleryImages.map(item => item.slot);
+    next.images = galleryImages;
     renderState(next);
-    if (!silent || !wasConnected) message('徽章已连接。选择图片并上传，或点击槽位查看已保存的图片。', 'success');
+    if (!silent || !wasConnected) message('徽章已连接。选择图片并上传，或点击槽位查看已保存的 JPEG 图片。', 'success');
   } catch (error) {
     connected = false;
+    catalogRevision = null;
     $('deviceInfo').textContent = error.message;
     updateControls();
     if (!silent) message(error.message, 'error');
@@ -556,15 +631,19 @@ cropSelection.addEventListener('keydown', event => {
 });
 window.addEventListener('resize',finishCropDrag);
 window.addEventListener('blur',finishCropDrag);
-function encode565() {
+async function encodeJpeg() {
   drawCrop();
-  const pixels=cropCtx.getImageData(0,0,SIZE,SIZE).data;
-  const result=new Uint8Array(FRAME_BYTES);
-  for (let p=0,b=0;p<pixels.length;p+=4,b+=2) {
-    const value=((pixels[p]>>3)<<11)|((pixels[p+1]>>2)<<5)|(pixels[p+2]>>3);
-    result[b]=value&255; result[b+1]=value>>8;
-  }
-  return result;
+  const output=document.createElement('canvas'); output.width=output.height=SIZE;
+  const ctx=output.getContext('2d'); ctx.fillStyle='#000'; ctx.fillRect(0,0,SIZE,SIZE);
+  ctx.beginPath(); ctx.arc(SIZE/2,SIZE/2,233,0,Math.PI*2); ctx.clip(); ctx.drawImage(crop,0,0);
+  const blob=await new Promise((resolve,reject)=>output.toBlob(value=>value?resolve(value):reject(new Error('浏览器无法生成 JPEG 图片。')),'image/jpeg',0.85));
+  const jpeg=new Uint8Array(await blob.arrayBuffer());
+  if (jpeg[0]!==0xff || jpeg[1]!==0xd8 || jpeg[jpeg.length-2]!==0xff || jpeg[jpeg.length-1]!==0xd9) throw new Error('浏览器返回了无效 JPEG 数据。');
+  const tagged=new Uint8Array(jpeg.length+17); tagged.set(jpeg.subarray(0,2));
+  tagged.set([0xff,0xfe,0x00,0x0f,0x42,0x44,0x47,0x4a,0x31],2);
+  new DataView(tagged.buffer).setUint32(11,tagged.length,true); tagged.set(jpeg.subarray(2),19);
+  new DataView(tagged.buffer).setUint32(15,crc32(tagged),true);
+  return tagged;
 }
 const crcTable = new Uint32Array(256);
 for (let n=0;n<256;n++) {
@@ -591,11 +670,29 @@ async function readFrame(path, context) {
   context.putImageData(pixels,0,0);
   return result.crc;
 }
+function normalizedJpegCRC(bytes) {
+  let crc=0xffffffff;
+  for(let i=0;i<bytes.length;i++) {
+    const byte=i>=15&&i<19?0:bytes[i];
+    crc=crcTable[(crc^byte)&255]^(crc>>>8);
+  }
+  return (crc^0xffffffff)>>>0;
+}
 async function readImage(slot) {
-  const crc=await readFrame(`/api/image?slot=${slot}`,savedCtx);
-  savedSlot=slot; savedCRC=crc;
+  const result=await api('/api/image?slot='+slot,{},true);
+  const bytes=new Uint8Array(result.buffer);
+  if(bytes.length<21||bytes[0]!==0xff||bytes[1]!==0xd8||bytes[2]!==0xff||bytes[3]!==0xfe||bytes[4]!==0||bytes[5]!==15||String.fromCharCode(...bytes.subarray(6,11))!=='BDGJ1'||new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength).getUint32(11,true)!==bytes.length||bytes[bytes.length-2]!==0xff||bytes[bytes.length-1]!==0xd9) throw new Error('设备返回了无效的带校验 JPEG 图片。');
+  const view=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength), storedCRC=view.getUint32(15,true);
+  if(normalizedJpegCRC(bytes)!==storedCRC||crc32(bytes)!==result.crc) throw new Error('JPEG 完整文件 CRC 校验失败，请重新读取。');
+  const catalogEntry=galleryImages.find(item=>item.slot===slot);
+  if(!catalogEntry||catalogEntry.crc32!==result.crc||catalogEntry.bytes!==bytes.length||(state.current===slot&&state.current_crc32!==result.crc)) throw new Error('JPEG 文件与设备目录的 CRC 或长度不一致，请刷新目录后重试。');
+  const bitmap=await createImageBitmap(new Blob([bytes],{type:'image/jpeg'}));
+  if(bitmap.width!==SIZE||bitmap.height!==SIZE){bitmap.close();throw new Error('设备 JPEG 尺寸不是 466 × 466。');}
+  savedCtx.clearRect(0,0,SIZE,SIZE); savedCtx.drawImage(bitmap,0,0); bitmap.close();
+  savedSlot=slot; savedCRC=result.crc;
   $('savedPlaceholder').hidden=true;
   updateControls();
+  return savedCRC;
 }
 async function readMenu() {
   if (!menuVisible()) return;
@@ -619,31 +716,19 @@ async function readDisplay() {
     throw error;
   } finally { updateControls(); }
 }
-for (let slot=0;slot<SLOT_COUNT;slot++) {
-  const button=document.createElement('button');
-  button.className='slot'; button.textContent=String(slot).padStart(2,'0'); button.disabled=true;
-  button.addEventListener('click',()=>{
-    if (busy) return;
-    selected=slot; clearSaved(); updateControls();
-    if (occupied(slot)) perform(`正在从徽章读取槽位 ${slot}…`,()=>readImage(slot),'已从设备读取原始图片，CRC 校验通过。');
-  });
-  $('slots').append(button); slotButtons.push(button);
-  const option=document.createElement('option'); option.value=slot;
-  $('uploadSlot').append(option);
-}
-$('upload').addEventListener('click',()=>{
+$( 'upload').addEventListener('click',()=>{
   if (!image || !state || busy) return;
-  const choice=$('uploadSlot').value;
-  const slot=choice==='auto' ? Array.from({length:SLOT_COUNT},(_,i)=>i).find(i=>!occupied(i)) : Number(choice);
-  if (slot===undefined) { message(`${SLOT_COUNT} 个槽位已满。请选择一个槽位覆盖，或先删除不需要的图片。`,'error'); return; }
-  if (occupied(slot) && !confirm(`槽位 ${slot} 已有图片。确定用当前图片覆盖吗？`)) return;
-  perform(`正在上传到槽位 ${slot}，请保持 USB 连接…`,async()=>{
-    const data=encode565();
-    await api(`/api/image?slot=${slot}`,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:data});
-    selected=slot;
-    clearSaved('正在读取上传后的图片');
-    await readImage(slot);
-  },`槽位 ${slot} 已保存并显示，设备回读校验通过。`);
+  const choice=$('uploadSlot').value, explicit=choice==='auto'?null:Number(choice);
+  if (choice!=='auto'&&(!Number.isInteger(explicit)||explicit<0||explicit>2147483646||!occupied(explicit))) { message('请选择自动分配，或选择一个当前已保存的 ID 进行覆盖。','error'); return; }
+  if (explicit!==null&&!confirm('槽位 '+explicit+' 已有图片。确定用当前图片覆盖吗？')) return;
+  perform('正在上传 JPEG 图片，请保持 USB 连接…',async()=>{
+    const data=await encodeJpeg();
+    const result=await api('/api/image?slot='+(explicit===null?'auto':explicit),{method:'POST',headers:{'Content-Type':'image/jpeg'},body:data});
+    selected=result.slot;
+    await refreshStatus(true);
+    clearSaved('正在读取上传后的 JPEG 图片');
+    await readImage(selected);
+  },'槽位已保存；设备回读的 JPEG CRC 校验通过。');
 });
 $('show').addEventListener('click',()=>perform('正在切换图片…',()=>post('/api/show',{slot:selected}),'已显示所选图片。'));
 $('delete').addEventListener('click',()=>{
@@ -651,6 +736,7 @@ $('delete').addEventListener('click',()=>{
   perform('正在删除图片…',async()=>{await post('/api/delete',{slot:selected});clearSaved();},'图片已从设备删除。');
 });
 $('next').addEventListener('click',()=>perform('正在切换下一张…',()=>post('/api/next'),'已切换下一张图片。'));
+$('previous').addEventListener('click',()=>perform('正在返回播放历史上一张…',()=>post('/api/previous'),'已返回实际播放历史上一张。'));
 $('readback').addEventListener('click',()=>perform('正在从设备重新读取图片…',()=>readImage(selected),'设备图片读取完成，CRC 校验通过。'));
 $('sleep').addEventListener('click',()=>{
   const sleeping=!state.sleeping;
@@ -662,16 +748,20 @@ $('brightness').addEventListener('change',()=>{
   brightnessEditing=false;
   perform('正在设置亮度…',()=>post('/api/brightness',{value}),`亮度已设置为 ${value}。`);
 });
-for (const id of ['slideshowEnabled','slideshowInterval']) $(id).addEventListener('input',()=>{slideshowEditing=true;});
+for (const id of ['slideshowEnabled','slideshowInterval','shuffleEnabled']) $(id).addEventListener('input',()=>{slideshowEditing=true;});
 $('applySlideshow').addEventListener('click',()=>{
-  const enabled=$('slideshowEnabled').checked, interval=Number($('slideshowInterval').value);
+  const enabled=$('slideshowEnabled').checked, interval=Number($('slideshowInterval').value), shuffle=$('shuffleEnabled').checked;
   if (!Number.isInteger(interval) || interval < 2 || interval > 3600) {
     message('自动切图间隔必须是 2～3600 的整数秒。','error'); return;
   }
   perform('正在保存自动切图设置…',async()=>{
     await post('/api/slideshow',{enabled,interval});
+    if (shuffle !== state.shuffle_enabled) {
+      try { await post('/api/shuffle',{enabled:shuffle}); }
+      catch (error) { throw new Error(`自动切图已保存，随机顺序保存失败：${error.message} 草稿已保留；设备实际设置以下方回读为准。`); }
+    }
     slideshowEditing=false;
-  },'自动切图设置已保存在设备；下方状态来自设备。');
+  },'自动切图与随机顺序设置已保存在设备；下方状态来自设备。');
 });
 for (const id of ['autosleepUsb','autosleepBattery']) $(id).addEventListener('input',()=>{autosleepEditing=true;});
 $('applyAutosleep').addEventListener('click',()=>{

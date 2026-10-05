@@ -17,15 +17,21 @@
 #include "auto_sleep.h"
 #include "picture_animation.h"
 #include "gravity_sensor.h"
+#include "native_menu.h"
+#include "battery_status.h"
+#include "picture_player.h"
+#include "touch_gesture.h"
 #include <driver/gpio.h>
+#include <algorithm>
+#include <vector>
+#include "jpeg_decoder.h"
 
 namespace {
 constexpr size_t kFrameBytes = LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t);
 constexpr size_t kChunkBytes = 4096;
-constexpr unsigned kSlots = 50;
+constexpr uint32_t kMaxSlot = BadgeJpeg::kMaxSlot;
 constexpr uint32_t kChunkTimeout = 10000;
 constexpr uint32_t kTransferTimeout = 90000;
-constexpr uint32_t kFileMagic = 0x31474442; // BDG1; payload is little-endian RGB565.
 constexpr char kTemporary[] = "/upload.tmp";
 static_assert(kFrameBytes == 434312, "Host and panel geometry must agree");
 constexpr uint8_t kBootPin = 0; // ESP32-S3 BOOT is GPIO0.
@@ -36,12 +42,6 @@ constexpr uint8_t kTearingPin = 13; // 1.75C schematic: GPIO13 -> LCD_TE.
 constexpr const char *kTransitions[] = {"direct", "fade", "slide"};
 constexpr const char *kMotions[] = {"off", "shift", "rotate", "gravity"};
 
-struct ImageHeader {
-  uint32_t magic;
-  uint32_t length;
-  uint32_t crc;
-};
-static_assert(sizeof(ImageHeader) == 12, "Stable on-flash header");
 
 BadgeQSPI bus(LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
 Arduino_CO5300 gfx(&bus, LCD_RESET, 0, LCD_WIDTH, LCD_HEIGHT, 6, 0, 0, 0);
@@ -64,7 +64,18 @@ class FrameCanvas : public Arduino_Canvas {
 uint8_t *frame = nullptr;
 uint8_t ioBuffer[kChunkBytes];
 uint32_t crcTable[256];
-bool occupied[kSlots] = {};
+struct SlotEntry { int32_t slot; uint32_t bytes; uint32_t storedCrc; uint32_t transferCrc; };
+std::vector<SlotEntry> catalog;
+std::vector<int32_t> catalogIds;
+uint32_t catalogRevision = 0;
+uint64_t catalogBytes = 0;
+String catalogJson;
+uint32_t catalogJsonCrc = 0;
+bool catalogOk = false;
+BadgeJpegDecoder jpegDecoder;
+uint32_t loadUs = 0, decodeUs = 0;
+size_t storageTotal = 0, storageUsed = 0;
+int64_t nextSlotId = 0;
 bool displayOk = false;
 bool touchOk = false;
 bool storageOk = false;
@@ -75,7 +86,9 @@ uint8_t brightness = 80;
 int current = -1;
 uint32_t currentCrc = 0;
 bool menuOpen = false;
-enum class MenuPage { Main, Timeout, Animation };
+PicturePlayer player;
+TouchGesture gesture;
+BatteryStatus menuBattery;
 MenuPage menuPage = MenuPage::Main;
 AutoSleep autoSleep;
 bool slideshowEnabled = false;
@@ -84,10 +97,7 @@ uint32_t slideshowStarted = 0;
 const char *slideshowError = "";
 volatile bool touchInterrupt = false;
 bool fingerDown = false;
-bool gestureHandled = false;
-uint32_t fingerStarted = 0;
 uint32_t fingerLastEvent = 0;
-int16_t fingerInitialX = 0, fingerInitialY = 0;
 int16_t fingerLastX = 0, fingerLastY = 0;
 bool suppressTouch = false;
 uint32_t touchSuppressedAt = 0;
@@ -131,7 +141,7 @@ void clearGesture() {
     touchSuppressedAt = millis();
   }
   fingerDown = false;
-  gestureHandled = false;
+  gesture.cancel();
   noInterrupts();
   touchInterrupt = false;
   interrupts();
@@ -153,34 +163,98 @@ uint32_t updateCrc(uint32_t crc, const uint8_t *data, size_t length) {
 }
 
 void slotPath(unsigned slot, char *path, size_t length) {
-  snprintf(path, length, "/slot%02u.rgb", slot);
+  snprintf(path, length, "/slot%u.jpg", slot);
 }
 
-bool readHeader(File &file, ImageHeader &header) {
-  return file && file.size() == sizeof(header) + kFrameBytes &&
-         file.read(reinterpret_cast<uint8_t *>(&header), sizeof(header)) == sizeof(header) &&
-         header.magic == kFileMagic && header.length == kFrameBytes;
+auto findSlot(unsigned slot) {
+  return std::lower_bound(catalog.begin(), catalog.end(), slot,
+      [](const SlotEntry& entry, unsigned id) { return static_cast<unsigned>(entry.slot) < id; });
+}
+bool hasSlot(unsigned slot) {
+  const auto entry = findSlot(slot);
+  return entry != catalog.end() && static_cast<unsigned>(entry->slot) == slot;
+}
+int64_t nextSlot() {
+  uint32_t candidate = 0;
+  for (const auto& entry : catalog) {
+    if (static_cast<uint32_t>(entry.slot) != candidate) break;
+    if (candidate == kMaxSlot) return -1;
+    ++candidate;
+  }
+  return candidate;
+}
+
+void publishCatalog() {
+  ++catalogRevision;
+  storageTotal = LittleFS.totalBytes();
+  storageUsed = LittleFS.usedBytes();
+  nextSlotId = nextSlot();
+  catalogBytes = 0;
+  catalogIds.clear();
+  catalogIds.reserve(catalog.size());
+  catalogOk = catalogJson.reserve(64U + catalog.size() * 64U);
+  catalogJson = "";
+  if (catalogOk) {
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "{\"revision\":%lu,\"images\":[", static_cast<unsigned long>(catalogRevision));
+    catalogJson += prefix;
+  }
+  bool first = true;
+  for (const auto& entry : catalog) {
+    catalogIds.push_back(entry.slot);
+    catalogBytes += entry.bytes;
+    if (!catalogOk) continue;
+    if (!first) catalogJson += ',';
+    first = false;
+    char item[112];
+    snprintf(item, sizeof(item), "{\"slot\":%ld,\"bytes\":%lu,\"crc32\":%lu}",
+             static_cast<long>(entry.slot), static_cast<unsigned long>(entry.bytes), static_cast<unsigned long>(entry.transferCrc));
+    catalogJson += item;
+  }
+  if (catalogOk) catalogJson += "]}";
+  catalogJsonCrc = updateCrc(0xffffffffU, reinterpret_cast<const uint8_t*>(catalogJson.c_str()), catalogJson.length()) ^ 0xffffffffU;
+  player.membership(catalogIds.data(), catalogIds.size());
+}
+
+const char *loadJpeg(File& file, uint32_t& crc, uint8_t* destination, uint32_t* transfer = nullptr) {
+  if (!destination) return "psram_unavailable";
+  const uint32_t started = micros();
+  uint32_t exactCrc = 0;
+  const char* error = jpegDecoder.decode(file, destination, ioBuffer, sizeof(ioBuffer), crcTable, crc, exactCrc);
+  if (!error) {
+    loadUs = micros() - started;
+    decodeUs = jpegDecoder.decodeUs;
+    if (transfer) *transfer = exactCrc;
+  }
+  return error;
+}
+
+// Catalog discovery validates every persistent byte without IDCT or touching
+// canonical image buffers. Only the selected image is decoded at boot.
+const char* inspectJpeg(File& file, uint32_t& storedCrc, uint32_t& transferCrc) {
+  if (!file || !file.seek(0)) return "storage_read";
+  const size_t length = file.size();
+  BadgeJpeg::Integrity integrity(crcTable);
+  uint32_t expected = 0;
+  while (integrity.bytes < length) {
+    const size_t count = min(sizeof(ioBuffer), length - integrity.bytes);
+    if (file.read(ioBuffer, count) != count) return "storage_read";
+    if (!integrity.bytes && !BadgeJpeg::header(ioBuffer, count, length, expected)) return "jpeg_metadata";
+    integrity.append(ioBuffer, count); delay(0);
+  }
+  if (const char* error = integrity.finish(length, expected)) return error;
+  storedCrc = integrity.storedCrc(); transferCrc = integrity.transferCrc();
+  return nullptr;
 }
 
 const char *loadPicture(unsigned slot, uint32_t &crc, uint8_t *destination = frame) {
   if (!storageOk) return "storage_unavailable";
-  if (!destination) return "psram_unavailable";
-  if (!occupied[slot]) return "empty_slot";
+  if (!hasSlot(slot)) return "empty_slot";
   char path[24];
   slotPath(slot, path, sizeof(path));
   File file = LittleFS.open(path, FILE_READ);
-  ImageHeader header;
-  if (!readHeader(file, header)) return "invalid_image";
-  uint32_t sum = 0xFFFFFFFFU;
-  for (size_t offset = 0; offset < kFrameBytes;) {
-    const size_t count = min(kChunkBytes, kFrameBytes - offset);
-    if (file.read(destination + offset, count) != count) return "storage_read";
-    sum = updateCrc(sum, destination + offset, count);
-    offset += count;
-    delay(0);
-  }
-  crc = sum ^ 0xFFFFFFFFU;
-  return crc == header.crc ? nullptr : "stored_crc_mismatch";
+  uint32_t normalizedCrc = 0;
+  return loadJpeg(file, normalizedCrc, destination, &crc);
 }
 
 void centeredText(const char *text, int y, uint8_t size, uint16_t color) {
@@ -206,56 +280,25 @@ void drawWelcome() {
     centeredText("Check device status", 372, 2, 0xFC80);
   } else {
     char capacity[40];
-    snprintf(capacity, sizeof(capacity), "466 x 466  |  %u pictures", kSlots);
+    snprintf(capacity, sizeof(capacity), "466 x 466  |  %u pictures", static_cast<unsigned>(catalog.size()));
     centeredText(capacity, 372, 2, 0x2DDB);
   }
 }
 
-struct MenuButton {
-  int16_t x, y, width, height;
-  const char *action;
-  const char *label;
-};
-
-// All hit rectangles, including their corners, are inside the round panel.
-constexpr MenuButton kMenuButtons[] = {
-    {93, 96, 280, 46, "slideshow", "AUTO"},
-    {93, 158, 58, 46, "interval_down", "-"},
-    {315, 158, 58, 46, "interval_up", "+"},
-    {93, 226, 58, 46, "brightness_down", "-"},
-    {315, 226, 58, 46, "brightness_up", "+"},
-    {83, 292, 142, 46, "next", "NEXT"},
-    {241, 292, 142, 46, "sleep", "SLEEP"},
-    {83, 354, 142, 46, "timeout", "TIMEOUT"},
-    {241, 354, 142, 46, "back", "BACK"},
-    {158, 408, 150, 38, "animation", "ANIMATION"},
-};
-constexpr MenuButton kTimeoutButtons[] = {
-    {93, 130, 58, 46, "usb_sleep_down", "-"},
-    {315, 130, 58, 46, "usb_sleep_up", "+"},
-    {93, 230, 58, 46, "battery_sleep_down", "-"},
-    {315, 230, 58, 46, "battery_sleep_up", "+"},
-    {158, 330, 150, 46, "main", "BACK"},
-};
-constexpr MenuButton kAnimationButtons[] = {
-    {93, 105, 280, 46, "transition_next", "CUT"},
-    {93, 173, 280, 46, "motion_next", "MOTION"},
-    {93, 273, 58, 46, "rotation_faster", "-"},
-    {315, 273, 58, 46, "rotation_slower", "+"},
-    {158, 354, 150, 46, "main", "BACK"},
-};
-
 const MenuButton *menuButtons(size_t &count) {
-  if (menuPage == MenuPage::Timeout) {
-    count = sizeof(kTimeoutButtons) / sizeof(kTimeoutButtons[0]);
-    return kTimeoutButtons;
+  return pageButtons(menuPage, count);
+}
+
+int hitMenuButton(int x, int y) {
+  size_t count;
+  const MenuButton *buttons = menuButtons(count);
+  for (size_t i = 0; i < count; ++i) {
+    const auto &button = buttons[i];
+    if (!menuActionAllowed(menuPage, button.action, animation.motion == 2)) continue;
+    if (x >= button.x && x < button.x + button.width &&
+        y >= button.y && y < button.y + button.height) return static_cast<int>(i);
   }
-  if (menuPage == MenuPage::Animation) {
-    count = sizeof(kAnimationButtons) / sizeof(kAnimationButtons[0]);
-    return kAnimationButtons;
-  }
-  count = sizeof(kMenuButtons) / sizeof(kMenuButtons[0]);
-  return kMenuButtons;
+  return -1;
 }
 
 void timeoutText(char *buffer, size_t size, uint32_t seconds) {
@@ -273,31 +316,57 @@ void menuText(FrameCanvas &canvas, const char *text, int centerX, int y,
   canvas.print(text);
 }
 
+BatteryStatus readBatteryStatus(int reg00) {
+  const int percent = pmuOk && reg00 >= 0 && (reg00 & 0x08)
+                    ? power.readRegister(XPOWERS_AXP2101_BAT_PERCENT_DATA) : -1;
+  const int reg01 = pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS2) : -1;
+  return BatteryStatus::decode(reg00, percent, reg01);
+}
+
+void drawBatteryRow(FrameCanvas &canvas, const BatteryStatus &battery) {
+  char text[32];
+  battery.text(text, sizeof(text));
+  canvas.fillRect(kMenuBatteryX, kMenuBatteryY, kMenuBatteryWidth, kMenuBatteryHeight, 0x0843);
+  menuText(canvas, text, 233, kMenuBatteryTextY, 2, 0xBDF7);
+}
+
+void updateMenuBattery(int reg00) {
+  if (!menuOpen || sleeping || !displayOk || !frame) return;
+  const BatteryStatus battery = readBatteryStatus(reg00);
+  if (battery == menuBattery) return;
+  menuBattery = battery;
+  FrameCanvas canvas(frame);
+  drawBatteryRow(canvas, battery);
+  gfx.startWrite();
+  gfx.writeAddrWindow(kMenuBatteryX, kMenuBatteryY, kMenuBatteryWidth, kMenuBatteryHeight);
+  auto *pixels = reinterpret_cast<uint16_t *>(frame);
+  for (int y = kMenuBatteryY; y < kMenuBatteryY + kMenuBatteryHeight; ++y)
+    gfx.writePixels(pixels + y * LCD_WIDTH + kMenuBatteryX, kMenuBatteryWidth);
+  gfx.endWrite();
+}
+
 void drawMenu() {
   if (!displayOk || !frame || sleeping || !menuOpen) return;
   FrameCanvas canvas(frame);
   canvas.fillScreen(0x0843);
-  canvas.drawCircle(233, 233, 220, 0x2DDB);
-  const char *title = menuPage == MenuPage::Timeout ? "SCREEN TIMEOUT"
-                    : menuPage == MenuPage::Animation ? "ANIMATION" : "BADGE MENU";
-  menuText(canvas, title, 233, 53, menuPage == MenuPage::Timeout ? 2 : 3, 0xFFFF);
+  menuText(canvas, menuTitle(menuPage), 233, kMenuTitleY, 2, 0xFFFF);
+  menuBattery = readBatteryStatus(pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1);
+  drawBatteryRow(canvas, menuBattery);
+  char picture[24];
+  if (current >= 0) snprintf(picture, sizeof(picture), "Picture %d", current + 1);
+  else snprintf(picture, sizeof(picture), "No picture");
+  menuText(canvas, picture, 233, kMenuPictureY, 1, 0xBDF7);
   size_t buttonCount = 0;
   const MenuButton *buttons = menuButtons(buttonCount);
   for (size_t i = 0; i < buttonCount; ++i) {
     const auto &button = buttons[i];
     canvas.fillRoundRect(button.x, button.y, button.width, button.height, 12, 0x1230);
-    const char *label = button.label;
-    if (strcmp(button.action, "slideshow") == 0) {
-      label = slideshowEnabled ? "AUTO: ON" : "AUTO: OFF";
-    }
-    if (strcmp(button.action, "transition_next") == 0) {
-      static constexpr const char *labels[] = {"CUT: DIRECT", "CUT: FADE", "CUT: SLIDE"};
-      label = labels[animation.transition];
-    } else if (strcmp(button.action, "motion_next") == 0) {
-      static constexpr const char *labels[] = {"MOTION: OFF", "MOTION: SHIFT", "MOTION: ROTATE", "MOTION: GRAVITY"};
-      label = labels[animation.motion];
-    }
-    menuText(canvas, label, button.x + button.width / 2, button.y + 15, 2, 0xFFFF);
+    const char *label = menuButtonLabel(button, slideshowEnabled, player.shuffle(),
+                                      animation.transition, animation.motion);
+    const bool enabled = menuActionAllowed(menuPage, button.action, animation.motion == 2) &&
+                         (strcmp(button.action, "previous") != 0 || player.previousAvailable());
+    menuText(canvas, label, button.x + button.width / 2,
+             button.y + (button.height - 16) / 2, 2, enabled ? 0xFFFF : 0x7BEF);
   }
   char value[32];
   if (menuPage == MenuPage::Timeout) {
@@ -308,9 +377,6 @@ void drawMenu() {
     timeoutText(value, sizeof(value), autoSleep.batterySeconds);
     menuText(canvas, value, 233, 247, 2, 0xFFFF);
     menuText(canvas, "OFF = ALWAYS ON", 233, 295, 1, 0xBDF7);
-    const char *source = autoSleep.supply == AutoSleep::Supply::Usb ? "Power: USB"
-                       : autoSleep.supply == AutoSleep::Supply::Battery ? "Power: Battery" : "Power: Unknown (USB policy)";
-    menuText(canvas, source, 233, 395, 1, 0xBDF7);
   } else if (menuPage == MenuPage::Animation) {
     if (!gravity.ok) menuText(canvas, "GRAVITY SENSOR UNAVAILABLE", 233, 225, 1, 0xFC80);
     else if (animation.motion == 3) menuText(canvas, "FLAT: LAST POSE / FIRST: NATIVE", 233, 225, 1, 0xBDF7);
@@ -320,16 +386,14 @@ void drawMenu() {
     menuText(canvas, animation.motion == 3 ? "GRAVITY USES SENSOR, NOT THIS SPEED"
                                          : "- FASTER / + SLOWER", 233, 330, 1, 0xBDF7);
     menuText(canvas, "Motion never renews idle timeout", 233, 414, 1, 0xBDF7);
-  } else {
+  } else if (menuPage == MenuPage::Playback) {
     snprintf(value, sizeof(value), "%u sec", slideshowInterval);
-    menuText(canvas, value, 233, 175, 2, 0xFFFF);
-    menuText(canvas, "INTERVAL", 233, 147, 1, 0xBDF7);
+    menuText(canvas, value, 233, 281, 2, 0xFFFF);
+    menuText(canvas, "INTERVAL", 233, 236, 1, 0xBDF7);
+  } else if (menuPage == MenuPage::Display) {
     snprintf(value, sizeof(value), "%u", brightness);
-    menuText(canvas, value, 233, 243, 2, 0xFFFF);
-    menuText(canvas, "BRIGHTNESS", 233, 215, 1, 0xBDF7);
-    if (current >= 0) snprintf(value, sizeof(value), "Picture %d", current + 1);
-    else snprintf(value, sizeof(value), "No picture");
-    menuText(canvas, value, 233, 82, 1, 0xBDF7);
+    menuText(canvas, value, 233, 165, 2, 0xFFFF);
+    menuText(canvas, "BRIGHTNESS", 233, 110, 1, 0xBDF7);
   }
   gfx.draw16bitRGBBitmap(0, 0, reinterpret_cast<uint16_t *>(frame), LCD_WIDTH, LCD_HEIGHT);
 }
@@ -360,39 +424,67 @@ void wakePanel() {
   resetSlideshowTimer();
 }
 
-const char *showPicture(unsigned slot, bool remember = true) {
+const char *showPicture(unsigned slot, bool remember = true, bool manual = true, bool closeMenu = false) {
   if (!displayOk) return "display_unavailable";
   if (remember && !preferencesOk) return "preferences_unavailable";
   if (!animationOk) return "psram_unavailable";
   const bool animate = !sleeping && !menuOpen;
-  const bool interrupted = animation.transitioning();
   animation.cancel(brightness);
   uint32_t crc;
   const char *error = loadPicture(slot, crc, reinterpret_cast<uint8_t *>(animation.nextSource()));
+  if (error) return error;
+  const bool wasSleeping = sleeping;
+  if (wasSleeping && displayOk) { gfx.displayOn(); enablePanelSync(); gfx.setBrightness(brightness); }
+  error = animation.prepareImage(animate, brightness, !menuOpen || closeMenu);
+  if (!error && remember && !rememberCurrent(slot)) {
+    animation.rejectImage(!menuOpen);
+    error = "preferences_write";
+  }
   if (error) {
-    if (interrupted && animate && current >= 0) animation.presentCurrent();
+    if (menuOpen) drawMenu();
+    if (wasSleeping && displayOk) { gfx.setBrightness(0); gfx.displayOff(); }
     return error;
   }
-  if (remember && !rememberCurrent(slot)) {
-    if (menuOpen) drawMenu();
-    return "preferences_write";
-  }
+  animation.commitImage();
   current = slot;
   currentCrc = crc;
+  if (manual) player.commitManual(slot);
+  else player.commit(slot);
+  if (closeMenu && menuOpen) {
+    menuOpen = false;
+    clearGesture();
+  }
   wakePanel();
   if (remember) autoSleep.activity(millis());
-  const char *presentError = animation.selectImage(animate, brightness, !menuOpen);
   if (menuOpen) drawMenu();
-  if (presentError) return presentError;
   return nullptr;
 }
 
 const char *nextPicture(bool remember = true) {
-  for (unsigned step = 1; step <= kSlots; ++step) {
-    const unsigned slot = (current + static_cast<int>(step)) % kSlots;
-    if (occupied[slot]) return showPicture(slot, remember);
+  const int slot = player.prepareNext(current);
+  if (slot < 0) return "no_next_picture";
+  return showPicture(static_cast<unsigned>(slot), remember, false);
+}
+
+const char *previousPicture() {
+  const int slot = player.preparePrevious();
+  if (slot < 0) return "previous_unavailable";
+  return showPicture(static_cast<unsigned>(slot), true, false);
+}
+
+const char *setShuffle(bool enabled) {
+  if (!preferencesOk) return "preferences_unavailable";
+  if (enabled == player.shuffle()) return nullptr;
+  if (preferences.getBool("shuffle", false) != enabled &&
+      preferences.putBool("shuffle", enabled) != 1) {
+    preferencesOk = false;
+    return "preferences_write";
   }
-  return "no_pictures";
+  player.setShuffle(enabled, current);
+  autoSleep.activity(millis());
+  resetSlideshowTimer();
+  if (menuOpen) drawMenu();
+  return nullptr;
 }
 
 const char *restorePicture() {
@@ -496,7 +588,8 @@ void pollAutoSleep() {
     const int status = pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1;
     const auto source = status < 0 ? AutoSleep::Supply::Unknown
                       : (status & 0x20) ? AutoSleep::Supply::Usb : AutoSleep::Supply::Battery;
-    if (autoSleep.updateSupply(source, now) && menuOpen) drawMenu();
+    autoSleep.updateSupply(source, now);
+    updateMenuBattery(status);
   }
   if (!sleeping && !fingerDown && autoSleep.due(now)) setSleeping(true);
 }
@@ -546,9 +639,19 @@ const char *setAnimation(uint8_t transition, uint8_t motion, uint16_t period) {
 
 const char *menuAction(const char *action) {
   if (!menuOpen || sleeping) return "menu_closed";
-  if (strcmp(action, "timeout") == 0 || strcmp(action, "animation") == 0 || strcmp(action, "main") == 0) {
-    menuPage = strcmp(action, "timeout") == 0 ? MenuPage::Timeout
-             : strcmp(action, "animation") == 0 ? MenuPage::Animation : MenuPage::Main;
+  if (!menuActionAllowed(menuPage, action, animation.motion == 2)) return "invalid_menu_action";
+  if (strcmp(action, "back") == 0 && menuPage == MenuPage::Main) return setMenu(false);
+  if (strcmp(action, "playback") == 0 || strcmp(action, "display") == 0 ||
+      strcmp(action, "timeout") == 0 || strcmp(action, "animation") == 0 ||
+      strcmp(action, "main") == 0 || strcmp(action, "back") == 0) {
+    const MenuPage previousPage = menuPage;
+    menuPage = strcmp(action, "playback") == 0 ? MenuPage::Playback
+             : strcmp(action, "display") == 0 ? MenuPage::Display
+             : strcmp(action, "timeout") == 0 ? MenuPage::Timeout
+             : strcmp(action, "animation") == 0 ? MenuPage::Animation
+             : strcmp(action, "back") == 0 && previousPage == MenuPage::Animation ? MenuPage::Display
+             : MenuPage::Main;
+    clearGesture();
     autoSleep.activity(millis());
     drawMenu();
     return nullptr;
@@ -584,6 +687,7 @@ const char *menuAction(const char *action) {
     return setAutoSleep(usb ? timeout : autoSleep.usbSeconds, usb ? autoSleep.batterySeconds : timeout);
   }
   if (strcmp(action, "slideshow") == 0) return setSlideshow(!slideshowEnabled, slideshowInterval);
+  if (strcmp(action, "shuffle") == 0) return setShuffle(!player.shuffle());
   if (strcmp(action, "interval_down") == 0 || strcmp(action, "interval_up") == 0) {
     const bool up = strcmp(action, "interval_up") == 0;
     uint16_t interval = up ? kIntervals[sizeof(kIntervals) / sizeof(kIntervals[0]) - 1] : kIntervals[0];
@@ -599,8 +703,8 @@ const char *menuAction(const char *action) {
   if (strcmp(action, "brightness_down") == 0) return setBrightness(brightness > 10 ? brightness - 10 : 1);
   if (strcmp(action, "brightness_up") == 0) return setBrightness(brightness < 170 ? brightness + 10 : 180);
   if (strcmp(action, "next") == 0) return nextPicture();
+  if (strcmp(action, "previous") == 0) return previousPicture();
   if (strcmp(action, "sleep") == 0) return setSleeping(true);
-  if (strcmp(action, "back") == 0) return setMenu(false);
   return "invalid_menu_action";
 }
 
@@ -608,11 +712,7 @@ void pollSlideshow() {
   if (!slideshowEnabled || sleeping || menuOpen) return;
   if (millis() - slideshowStarted < static_cast<uint32_t>(slideshowInterval) * 1000U) return;
   resetSlideshowTimer();
-  unsigned available = 0;
-  for (unsigned slot = 0; slot < kSlots; ++slot) {
-    if (occupied[slot]) ++available;
-  }
-  if (available < 2) return;
+  if (catalog.size() < 2) return;
   const char *error = nextPicture(false);
   slideshowError = error ? error : "";
 }
@@ -640,86 +740,61 @@ void drainAbandonedUpload() {
   }
 }
 
-const char *receivePicture(unsigned slot, uint32_t expectedCrc) {
+const char *receivePicture(unsigned slot, size_t length, uint32_t expectedCrc) {
   if (!storageOk) return "storage_unavailable";
   if (!frame || !animationOk) return "psram_unavailable";
   if (!displayOk) return "display_unavailable";
   if (!preferencesOk) return "preferences_unavailable";
+  const size_t total = storageTotal, used = storageUsed;
+  if (used > total || length > total - used || total - used - length < BadgeJpeg::kStorageReserve) return "storage_full";
+  File file = LittleFS.open(kTemporary, FILE_WRITE);
+  if (!file) return "storage_open";
+  auto abort = [&](const char* error) { file.close(); LittleFS.remove(kTemporary); storageUsed = LittleFS.usedBytes(); return error; };
   Serial.print("READY\n");
   const uint32_t started = millis();
-  uint32_t sum = 0xFFFFFFFFU;
-  for (size_t offset = 0; offset < kFrameBytes;) {
-    const size_t count = min(kChunkBytes, kFrameBytes - offset);
+  uint32_t sum = 0xffffffffU;
+  for (size_t offset = 0; offset < length;) {
+    const size_t count = min(kChunkBytes, length - offset);
     const uint32_t chunkStarted = millis();
     size_t received = 0;
     while (received < count) {
       if (millis() - chunkStarted >= kChunkTimeout || millis() - started >= kTransferTimeout) {
-        drainAbandonedUpload();
-        return "upload_timeout";
+        drainAbandonedUpload(); return abort("upload_timeout");
       }
       const int available = Serial.available();
       if (available > 0) {
         const size_t wanted = min(count - received, static_cast<size_t>(available));
-        received += Serial.read(frame + offset + received, wanted);
-      } else {
-        delay(1);
-      }
+        received += Serial.read(ioBuffer + received, wanted);
+      } else delay(1);
     }
-    sum = updateCrc(sum, frame + offset, count);
-    offset += count;
-    Serial.print("ACK\n");
+    sum = updateCrc(sum, ioBuffer, count);
+    if (file.write(ioBuffer, count) != count) { drainAbandonedUpload(); return abort("storage_write"); }
+    offset += count; Serial.print("ACK\n");
   }
-  sum ^= 0xFFFFFFFFU;
-  if (sum != expectedCrc) return "upload_crc_mismatch";
-
-  // Never remove the previous slot. LittleFS rename replaces it atomically only
-  // after the complete temporary file has been closed and read back successfully.
-  File file = LittleFS.open(kTemporary, FILE_WRITE);
-  if (!file) return "storage_open";
-  const ImageHeader header = {kFileMagic, kFrameBytes, sum};
-  bool written = file.write(reinterpret_cast<const uint8_t *>(&header), sizeof(header)) == sizeof(header);
-  for (size_t offset = 0; written && offset < kFrameBytes;) {
-    const size_t count = min(kChunkBytes, kFrameBytes - offset);
-    written = file.write(frame + offset, count) == count;
-    offset += count;
-    delay(0);
-  }
-  file.flush();
+  if ((sum ^ 0xffffffffU) != expectedCrc) return abort("upload_crc_mismatch");
+  file.flush(); file.close();
+  animation.cancel(brightness); // The inactive bank can still hold an outgoing slide.
+  file = LittleFS.open(kTemporary, FILE_READ);
+  uint32_t storedCrc = 0, transferCrc = 0;
+  const char* error = loadJpeg(file, storedCrc, reinterpret_cast<uint8_t*>(animation.nextSource()), &transferCrc);
+  if (error || transferCrc != expectedCrc) return abort(error ? error : "storage_verify");
   file.close();
-  bool verified = false;
-  if (written) {
-    file = LittleFS.open(kTemporary, FILE_READ);
-    ImageHeader check;
-    verified = readHeader(file, check) && check.crc == sum;
-    uint32_t storedCrc = 0xFFFFFFFFU;
-    for (size_t offset = 0; verified && offset < kFrameBytes;) {
-      const size_t count = min(kChunkBytes, kFrameBytes - offset);
-      verified = file.read(ioBuffer, count) == count;
-      if (verified) storedCrc = updateCrc(storedCrc, ioBuffer, count);
-      offset += count;
-      delay(0);
-    }
-    verified = verified && (storedCrc ^ 0xFFFFFFFFU) == sum;
-    file.close();
-  }
-  char path[24];
-  slotPath(slot, path, sizeof(path));
-  if (!verified || !LittleFS.rename(kTemporary, path)) {
-    LittleFS.remove(kTemporary);
-    return verified ? "storage_commit" : "storage_verify";
-  }
-  occupied[slot] = true;
-  const bool remembered = rememberCurrent(slot);
-  current = slot;
-  currentCrc = sum;
-  // A successful upload intentionally exits the menu to show the new picture.
-  menuOpen = false;
-  clearGesture();
-  wakePanel();
-  memcpy(animation.nextSource(), frame, kFrameBytes);
-  const char *presentError = animation.selectImage(false, brightness);
-  if (presentError) return presentError;
-  return remembered ? nullptr : "preferences_write";
+  char path[24]; slotPath(slot, path, sizeof(path));
+  if (!LittleFS.rename(kTemporary, path)) return abort("storage_commit");
+  auto entry = findSlot(slot);
+  const SlotEntry updated{static_cast<int32_t>(slot), static_cast<uint32_t>(length), storedCrc, transferCrc};
+  if (entry != catalog.end() && entry->slot == static_cast<int32_t>(slot)) { *entry = updated; player.invalidate(slot); }
+  else catalog.insert(entry, updated);
+  publishCatalog();
+  const bool wasSleeping = sleeping;
+  if (wasSleeping) { gfx.displayOn(); enablePanelSync(); gfx.setBrightness(brightness); }
+  error = animation.prepareImage(false, brightness);
+  if (!error && !rememberCurrent(slot)) { animation.rejectImage(!menuOpen); error = "preferences_write"; }
+  if (error) { if (wasSleeping) { gfx.setBrightness(0); gfx.displayOff(); } return error; }
+  animation.commitImage();
+  current = slot; currentCrc = transferCrc; player.commitManual(slot);
+  menuOpen = false; clearGesture(); wakePanel();
+  return nullptr;
 }
 
 void sendFrame(uint32_t crc, const uint8_t *pixels = frame) {
@@ -740,20 +815,50 @@ void sendFrame(uint32_t crc, const uint8_t *pixels = frame) {
 }
 
 void sendPicture(unsigned slot) {
-  uint32_t crc;
-  const char *error = loadPicture(slot, crc);
-  if (error) reply(error);
-  else sendFrame(crc);
-  // GET uses the shared frame; restore the actual menu after every outcome.
-  if (menuOpen) drawMenu();
+  if (!storageOk) return reply("storage_unavailable");
+  const auto entry = findSlot(slot);
+  if (entry == catalog.end() || entry->slot != static_cast<int32_t>(slot)) return reply("empty_slot");
+  char path[24]; slotPath(slot, path, sizeof(path));
+  File file = LittleFS.open(path, FILE_READ);
+  if (!file || file.size() != entry->bytes) return reply("storage_read");
+  Serial.printf("DATA %lu %lu\n", static_cast<unsigned long>(entry->bytes), static_cast<unsigned long>(entry->transferCrc));
+  uint32_t sum = 0xffffffffU;
+  const uint32_t started = millis();
+  for (size_t offset = 0; offset < file.size();) {
+    const size_t wanted = min(sizeof(ioBuffer), file.size() - offset);
+    if (file.read(ioBuffer, wanted) != wanted) return;
+    sum = updateCrc(sum, ioBuffer, wanted);
+    size_t sent = 0;
+    while (sent < wanted) {
+      sent += Serial.write(ioBuffer + sent, wanted - sent);
+      if (millis() - started >= kTransferTimeout || !Serial.isConnected()) return;
+      delay(0);
+    }
+    offset += wanted;
+  }
+  Serial.print("\n");
+  reply((sum ^ 0xffffffffU) == entry->transferCrc ? nullptr : "stored_crc_mismatch");
   resetSlideshowTimer();
+}
+
+void sendCatalog() {
+  if (!storageOk) return reply("storage_unavailable");
+  if (!catalogOk) return reply("catalog_unavailable");
+  Serial.printf("DATA %u %lu\n", static_cast<unsigned>(catalogJson.length()), static_cast<unsigned long>(catalogJsonCrc));
+  const uint32_t started = millis();
+  for (size_t offset = 0; offset < catalogJson.length();) {
+    const size_t wanted = min(kChunkBytes, catalogJson.length() - offset);
+    offset += Serial.write(reinterpret_cast<const uint8_t*>(catalogJson.c_str()) + offset, wanted);
+    if (millis() - started >= kTransferTimeout || !Serial.isConnected()) return;
+    delay(0);
+  }
+  Serial.print("\nOK\n");
 }
 
 void sendMenuFrame() {
   if (!menuOpen || sleeping) return reply("menu_closed");
   if (!displayOk) return reply("display_unavailable");
   if (!frame) return reply("psram_unavailable");
-  drawMenu();
   sendFrame(updateCrc(0xFFFFFFFFU, frame, kFrameBytes) ^ 0xFFFFFFFFU);
 }
 
@@ -765,28 +870,30 @@ void sendDisplayFrame() {
 }
 
 void status() {
-  const bool batteryConnected = pmuOk && power.isBatteryConnect();
-  int batteryPercent = batteryConnected ? power.getBatteryPercent() : -1;
-  if (batteryPercent < 0 || batteryPercent > 100) batteryPercent = -1;
-  Serial.print("{\"firmware\":\"picture-badge-1\",\"width\":466,\"height\":466,\"slots\":[");
-  bool first = true;
-  for (unsigned slot = 0; slot < kSlots; ++slot) {
-    if (!occupied[slot]) continue;
-    if (!first) Serial.print(',');
-    Serial.print(slot);
-    first = false;
-  }
-  Serial.printf("],\"current\":%d,\"brightness\":%u,\"sleeping\":%s,\"touch_ok\":%s,\"display_ok\":%s,\"storage_ok\":%s,\"current_crc32\":%lu,\"battery_connected\":%s,\"battery_percent\":%d,\"pmu_ok\":%s,\"psram_ok\":%s,\"preferences_ok\":%s,\"slideshow_enabled\":%s,\"slideshow_interval\":%u,\"slideshow_error\":\"%s\",\"menu_open\":%s,\"menu_page\":\"%s\",\"power_source\":\"%s\",\"autosleep_usb_seconds\":%lu,\"autosleep_battery_seconds\":%lu,\"autosleep_active_seconds\":%lu,\"autosleep_remaining_seconds\":%lu,",
+  const BatteryStatus battery = readBatteryStatus(pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1);
+  const char *batteryCharging = battery.charging < 0 ? "null" : battery.charging ? "true" : "false";
+  const size_t total = storageTotal, used = storageUsed;
+  Serial.printf("{\"firmware\":\"picture-badge-2\",\"width\":466,\"height\":466,\"catalog_revision\":%lu,\"image_count\":%u,\"catalog_bytes\":%llu,\"next_slot\":",
+                static_cast<unsigned long>(catalogRevision), static_cast<unsigned>(catalog.size()), static_cast<unsigned long long>(catalogBytes));
+  const int64_t next = nextSlotId;
+  if (next < 0) Serial.print("null"); else Serial.print(static_cast<unsigned long>(next));
+  Serial.printf(",\"storage_total_bytes\":%u,\"storage_used_bytes\":%u,\"storage_free_bytes\":%u,\"storage_reserve_bytes\":%u,\"load_us\":%lu,\"decode_us\":%lu,",
+                static_cast<unsigned>(total), static_cast<unsigned>(used), static_cast<unsigned>(total >= used ? total - used : 0),
+                static_cast<unsigned>(BadgeJpeg::kStorageReserve), static_cast<unsigned long>(loadUs), static_cast<unsigned long>(decodeUs));
+  Serial.printf("\"current\":%d,\"brightness\":%u,\"sleeping\":%s,\"touch_ok\":%s,\"display_ok\":%s,\"storage_ok\":%s,\"current_crc32\":%lu,\"battery_connected\":%s,\"battery_percent\":%d,\"pmu_ok\":%s,\"psram_ok\":%s,\"preferences_ok\":%s,\"slideshow_enabled\":%s,\"slideshow_interval\":%u,\"slideshow_error\":\"%s\",\"menu_open\":%s,\"menu_page\":\"%s\",\"power_source\":\"%s\",\"autosleep_usb_seconds\":%lu,\"autosleep_battery_seconds\":%lu,\"autosleep_active_seconds\":%lu,\"autosleep_remaining_seconds\":%lu,",
                 current, brightness, sleeping ? "true" : "false", touchOk ? "true" : "false",
                 displayOk ? "true" : "false", storageOk ? "true" : "false",
-                static_cast<unsigned long>(currentCrc), batteryConnected ? "true" : "false", batteryPercent,
+                static_cast<unsigned long>(currentCrc), battery.presence < 0 ? "null" : battery.presence ? "true" : "false", battery.percent,
                 pmuOk ? "true" : "false", frame && animationOk ? "true" : "false", preferencesOk ? "true" : "false",
                 slideshowEnabled ? "true" : "false", slideshowInterval, slideshowError,
-                menuOpen ? "true" : "false", menuPage == MenuPage::Timeout ? "timeout" : menuPage == MenuPage::Animation ? "animation" : "main",
+                menuOpen ? "true" : "false", menuPageName(menuPage),
                 autoSleep.supply == AutoSleep::Supply::Usb ? "usb" : autoSleep.supply == AutoSleep::Supply::Battery ? "battery" : "unknown",
                 static_cast<unsigned long>(autoSleep.usbSeconds), static_cast<unsigned long>(autoSleep.batterySeconds),
                 static_cast<unsigned long>(autoSleep.timeoutSeconds()),
                 static_cast<unsigned long>(sleeping ? 0 : (autoSleep.remainingMs(millis()) + 999U) / 1000U));
+  Serial.printf("\"battery_charging\":%s,", batteryCharging);
+  Serial.printf("\"shuffle_enabled\":%s,\"previous_available\":%s,",
+                player.shuffle() ? "true" : "false", player.previousAvailable() ? "true" : "false");
   Serial.printf("\"display_clock_khz\":%d,\"display_pack_us\":%lu,", bus.clockKhz, static_cast<unsigned long>(bus.packUs));
   Serial.printf("\"imu_ok\":%s,\"gravity_valid\":%s,\"gravity_error\":\"%s\",",
                 gravity.ok ? "true" : "false", gravity.pose.valid ? "true" : "false", gravity.pose.error);
@@ -816,26 +923,28 @@ bool unsignedArgument(const char *text, uint32_t maximum, uint32_t &value) {
 const char *deletePicture(unsigned slot) {
   if (!storageOk) return "storage_unavailable";
   if (!preferencesOk) return "preferences_unavailable";
-  if (!occupied[slot]) return "empty_slot";
+  if (!hasSlot(slot)) return "empty_slot";
   char path[24];
   slotPath(slot, path, sizeof(path));
   if (!LittleFS.remove(path)) return "storage_delete";
-  occupied[slot] = false;
+  catalog.erase(findSlot(slot));
+  publishCatalog();
   autoSleep.activity(millis());
   resetSlideshowTimer();
-  if (current != static_cast<int>(slot)) return nullptr;
+  if (current != static_cast<int>(slot)) {
+    if (menuOpen) drawMenu();
+    return nullptr;
+  }
   current = -1;
   currentCrc = 0;
   animation.invalidate(brightness);
   if (!rememberCurrent(-1)) return "preferences_write";
   const bool wasSleeping = sleeping;
   const char *error = nullptr;
-  for (unsigned step = 1; step < kSlots; ++step) {
-    const unsigned candidate = (slot + step) % kSlots;
-    if (occupied[candidate]) {
-      error = showPicture(candidate);
-      break;
-    }
+  if (!catalog.empty()) {
+    auto entry = findSlot(slot);
+    if (entry == catalog.end()) entry = catalog.begin();
+    error = showPicture(entry->slot);
   }
   if (current < 0) {
     if (menuOpen) drawMenu();
@@ -855,8 +964,14 @@ void dispatch(char *line) {
   uint32_t n = 0;
   if (count == 1 && strcmp(tokens[0], "STATUS") == 0) {
     status();
+  } else if (count == 1 && strcmp(tokens[0], "LIST") == 0) {
+    sendCatalog();
   } else if (count == 1 && strcmp(tokens[0], "NEXT") == 0) {
     reply(nextPicture());
+  } else if (count == 1 && strcmp(tokens[0], "PREVIOUS") == 0) {
+    reply(previousPicture());
+  } else if (count == 2 && strcmp(tokens[0], "SHUFFLE") == 0 && unsignedArgument(tokens[1], 1, n)) {
+    reply(setShuffle(n != 0));
   } else if (count == 1 && strcmp(tokens[0], "MENUFRAME") == 0) {
     sendMenuFrame();
   } else if (count == 1 && strcmp(tokens[0], "DISPLAYFRAME") == 0) {
@@ -892,22 +1007,24 @@ void dispatch(char *line) {
     reply(setBrightness(n));
   } else if (count == 2 && strcmp(tokens[0], "SLEEP") == 0 && unsignedArgument(tokens[1], 1, n)) {
     reply(setSleeping(n != 0));
-  } else if (count == 2 && unsignedArgument(tokens[1], kSlots - 1, n)) {
-    if (strcmp(tokens[0], "SHOW") == 0) reply(showPicture(n));
+  } else if (count == 2 && unsignedArgument(tokens[1], kMaxSlot, n)) {
+    if (strcmp(tokens[0], "SHOW") == 0) reply(showPicture(n, true, true, true));
     else if (strcmp(tokens[0], "DELETE") == 0) reply(deletePicture(n));
     else if (strcmp(tokens[0], "GET") == 0) sendPicture(n);
     else reply("unknown_command");
   } else if (count == 4 && strcmp(tokens[0], "PUT") == 0) {
     uint32_t length = 0, crc = 0;
-    if (!unsignedArgument(tokens[1], kSlots - 1, n) ||
-        !unsignedArgument(tokens[2], kFrameBytes, length) || length != kFrameBytes ||
+    const bool automatic = strcmp(tokens[1], "AUTO") == 0;
+    if ((!automatic && !unsignedArgument(tokens[1], kMaxSlot, n)) ||
+        !unsignedArgument(tokens[2], UINT32_MAX, length) || length < BadgeJpeg::kPrefixBytes + 2 ||
         !unsignedArgument(tokens[3], UINT32_MAX, crc)) return reply("invalid_upload_arguments");
-    const char *error = receivePicture(n, crc);
+    if (automatic) { if (nextSlotId < 0) return reply("slot_ids_exhausted"); n = nextSlotId; }
+    const char *error = receivePicture(n, length, crc);
     if (menuOpen) drawMenu();
     clearGesture();
     resetSlideshowTimer();
     autoSleep.activity(millis());
-    reply(error);
+    if (error) reply(error); else Serial.printf("OK %lu\n", static_cast<unsigned long>(n));
   } else {
     reply("invalid_command");
   }
@@ -941,6 +1058,25 @@ void pollSerial() {
   }
 }
 
+void applyGesture(GestureAction action, int capturedButton = -1) {
+  switch (action) {
+    case GestureAction::Next: nextPicture(); break;
+    case GestureAction::Previous: previousPicture(); break;
+    case GestureAction::OpenMenu: setMenu(true); break;
+    case GestureAction::CloseMenu: setMenu(false); break;
+    case GestureAction::Back: menuAction("back"); break;
+    case GestureAction::Sleep: setSleeping(true); break;
+    case GestureAction::Button: {
+      size_t count;
+      const MenuButton *buttons = menuButtons(count);
+      if (capturedButton >= 0 && static_cast<size_t>(capturedButton) < count)
+        menuAction(buttons[capturedButton].action);
+      break;
+    }
+    default: break;
+  }
+}
+
 void pollControls() {
   const uint32_t now = millis();
   if (touchOk && touchInterrupt) {
@@ -959,58 +1095,27 @@ void pollControls() {
       fingerLastY = y[0];
       if (!fingerDown) {
         fingerDown = true;
-        fingerStarted = now;
-        fingerInitialX = fingerLastX;
-        fingerInitialY = fingerLastY;
-        gestureHandled = false;
+        gesture.begin(fingerLastX, fingerLastY, now, menuOpen,
+                      menuOpen ? hitMenuButton(fingerLastX, fingerLastY) : -1, sleeping);
         if (sleeping) setSleeping(false);
+      } else {
+        gesture.move(fingerLastX, fingerLastY);
       }
     } else if (fingerDown) {
-      const uint32_t duration = now - fingerStarted;
-      const int dx = fingerLastX - fingerInitialX;
-      const int dy = fingerLastY - fingerInitialY;
-      const bool handled = gestureHandled;
-      // End this contact before acting, so changing menus does not swallow the
-      // next touch. getPoint() release coordinates are not mirrored by the driver.
+      // CST92xx release coordinates are not mirrored: use the last pressed
+      // coordinate, but require the same captured control at both endpoints.
+      const GestureAction action = gesture.release(now, menuOpen ? hitMenuButton(fingerLastX, fingerLastY) : -1);
+      const int captured = gesture.button();
       fingerDown = false;
-      gestureHandled = false;
-      if (!handled) {
-        if (!menuOpen && dy <= -80 && -dy > abs(dx)) {
-          setMenu(true);
-        } else if (duration >= 900) {
-          setSleeping(true);
-        } else if (duration >= 35) {
-          if (menuOpen) {
-            if (abs(dx) <= 30 && abs(dy) <= 30) {
-              size_t buttonCount = 0;
-              const MenuButton *buttons = menuButtons(buttonCount);
-              for (size_t i = 0; i < buttonCount; ++i) {
-                const auto &button = buttons[i];
-                if (fingerLastX >= button.x && fingerLastX < button.x + button.width &&
-                    fingerLastY >= button.y && fingerLastY < button.y + button.height) {
-                  menuAction(button.action);
-                  break;
-                }
-              }
-            }
-          } else {
-            nextPicture();
-          }
-        }
-      }
+      applyGesture(action, captured);
     }
   }
-  const int upward = fingerInitialY - fingerLastY;
-  const bool upwardSwipe = !menuOpen && upward >= 80 && upward > abs(fingerLastX - fingerInitialX);
-  if (fingerDown && !gestureHandled && !upwardSwipe && now - fingerStarted >= 900) {
-    setSleeping(true);
-    gestureHandled = true;
-  }
-  // A missed release must not permanently disable input. IRQ reports can be
-  // one second apart on CST92xx; allow more than two reports before recovery.
+  if (fingerDown) applyGesture(gesture.hold(now));
+  // CST92xx IRQ reports can be one second apart; recover a genuinely lost
+  // contact only after more than two report intervals.
   if (fingerDown && now - fingerLastEvent > 2500) {
     fingerDown = false;
-    gestureHandled = false;
+    gesture.cancel();
   }
   if (suppressTouch && now - touchSuppressedAt > 2500) suppressTouch = false;
 
@@ -1044,23 +1149,21 @@ void pollControls() {
 
 void initStorage() {
   storageOk = LittleFS.begin(false, "/badge", 4, "badge");
-  // Never auto-format an established badge filesystem on a later mount error.
-  // The label limits first-install formatting to the designated data partition.
-  if (!storageOk && preferencesOk && !preferences.getBool("fs_ready", false)) {
-    storageOk = LittleFS.begin(true, "/badge", 4, "badge");
-  }
-  if (!storageOk) return;
-  if (preferencesOk && !preferences.getBool("fs_ready", false)) {
-    if (preferences.putBool("fs_ready", true) != 1) preferencesOk = false;
-  }
+  if (!storageOk) return; // Existing data is never automatically formatted.
   LittleFS.remove(kTemporary);
-  for (unsigned slot = 0; slot < kSlots; ++slot) {
-    char path[24];
-    slotPath(slot, path, sizeof(path));
-    File file = LittleFS.open(path, FILE_READ);
-    ImageHeader header;
-    occupied[slot] = readHeader(file, header);
+  catalogRevision = esp_random();
+  File directory = LittleFS.open("/");
+  if (!directory || !directory.isDirectory()) { storageOk = false; return; }
+  for (File file = directory.openNextFile(); file; file = directory.openNextFile()) {
+    uint32_t slot, storedCrc = 0, transferCrc = 0;
+    if (!file.isDirectory() && BadgeJpeg::slotName(file.name(), slot) &&
+        !inspectJpeg(file, storedCrc, transferCrc)) {
+      catalog.push_back({static_cast<int32_t>(slot), static_cast<uint32_t>(file.size()), storedCrc, transferCrc});
+    }
+    file.close(); delay(0);
   }
+  std::sort(catalog.begin(), catalog.end(), [](const SlotEntry& left, const SlotEntry& right) { return left.slot < right.slot; });
+  publishCatalog();
 }
 } // namespace
 
@@ -1139,14 +1242,15 @@ void setup() {
   displayOk = gfx.begin(40000000);
   if (displayOk) { gfx.setBrightness(brightness); enablePanelSync(); delay(50); }
   initStorage();
+  player.reset(preferencesOk && preferences.getBool("shuffle", false), -1, catalogIds.data(), catalogIds.size(), esp_random());
   bool shown = false;
   const int remembered = preferencesOk ? preferences.getInt("current", -1) : -1;
-  if (remembered >= 0 && remembered < static_cast<int>(kSlots) && occupied[remembered]) {
+  if (remembered >= 0 && hasSlot(remembered)) {
     shown = showPicture(remembered) == nullptr;
   }
   if (!shown) {
-    for (unsigned slot = 0; slot < kSlots && !shown; ++slot) {
-      if (occupied[slot]) shown = showPicture(slot) == nullptr;
+    for (const auto& entry : catalog) {
+      if ((shown = showPicture(entry.slot) == nullptr)) break;
     }
   }
   if (!shown) drawWelcome();

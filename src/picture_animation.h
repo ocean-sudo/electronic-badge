@@ -69,12 +69,18 @@ class PictureAnimation {
 
   void pauseClock() { lastTick_ = millis(); }
 
-  const char *selectImage(bool animate, uint8_t brightness, bool displayNow = true) {
+  // Stage without discarding the old image/pose. The caller commits only after
+  // its preference write succeeds; neither immediate failure nor rejected NVS
+  // updates require an additional image buffer.
+  const char *prepareImage(bool animate, uint8_t brightness, bool displayNow = true) {
     if (!ready_) return "psram_unavailable";
     const bool previous = hasImage_ && hasFrame_;
     cancel(brightness);
-    // Freeze the actually presented pose, not the old canonical unrotated image.
-    if (animate && previous && transition == 2) memcpy(images_[imageIndex_], snapshot(), kBytes);
+    selection_ = {imageIndex_, front_, shiftPose_, motionElapsed_,
+                  presentedGravityAngle_, hasImage_, hasFrame_};
+    selectionPending_ = true;
+    selectionPhase_ = animate && previous && displayNow && transition != 0
+                    ? (transition == 1 ? FadeOut : Slide) : Idle;
     imageIndex_ ^= 1U;
     hasImage_ = true;
     motionElapsed_ = 0;
@@ -82,11 +88,38 @@ class PictureAnimation {
     started_ = millis();
     lastFrame_ = started_ - kFrameInterval;
     if (!displayNow) { hasFrame_ = false; return nullptr; }
-    if (animate && previous && transition != 0) {
-      phase_ = transition == 1 ? FadeOut : Slide;
-      return nullptr;
-    }
-    return presentCurrent();
+    if (selectionPhase_ != Idle) return nullptr;
+    const char *failure = presentCurrent();
+    if (failure) rejectImage(true);
+    return failure;
+  }
+
+  void commitImage() {
+    if (!selectionPending_) return;
+    // This is the asynchronous acceptance boundary. Later DMA errors do not
+    // undo an accepted player step. Slide freezes the outgoing presented pose.
+    if (selectionPhase_ == Slide)
+      memcpy(images_[selection_.image], outputs_[selection_.front], kBytes);
+    phase_ = selectionPhase_;
+    started_ = millis();
+    pauseClock();
+    selectionPending_ = false;
+  }
+
+  void rejectImage(bool restorePanel) {
+    if (!selectionPending_) return;
+    imageIndex_ = selection_.image;
+    front_ = selection_.front;
+    shiftPose_ = selection_.shift;
+    motionElapsed_ = selection_.motion;
+    presentedGravityAngle_ = selection_.gravity;
+    hasImage_ = selection_.hasImage;
+    hasFrame_ = selection_.hasFrame;
+    phase_ = Idle;
+    selectionPending_ = false;
+    if (restorePanel && hasFrame_)
+      display_.draw16bitRGBBitmap(0, 0, outputs_[front_], 466, 466);
+    pauseClock();
   }
 
   const char *presentCurrent() {
@@ -243,4 +276,12 @@ class PictureAnimation {
   Phase phase_ = Idle;
   uint32_t started_ = 0, lastFrame_ = 0, lastTick_ = 0, motionElapsed_ = 0;
   uint16_t gravityAngle_ = 0, presentedGravityAngle_ = 0;
+  struct SelectionState {
+    unsigned image, front, shift;
+    uint32_t motion;
+    uint16_t gravity;
+    bool hasImage, hasFrame;
+  } selection_ = {};
+  bool selectionPending_ = false;
+  Phase selectionPhase_ = Idle;
 };
