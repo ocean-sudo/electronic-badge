@@ -8,7 +8,7 @@
 
 ![真实网页控制台的离线裁切演示，合成图片，未连接设备](docs/assets/console-desktop.webp)
 
-[查看手机尺寸控制台截图](docs/assets/console-mobile.webp) · [中文项目主页入口](https://ocean-sudo.github.io/electronic-badge/)
+[查看手机尺寸控制台截图](docs/assets/console-mobile.webp) · [中文项目介绍页](https://electronic-badge-project.github.io/electronic-badge/)
 
 ## 功能
 
@@ -118,6 +118,6 @@ APP-only 刷写不会改写 LittleFS、NVS、bootloader 或分区表。已有设
 
 ## GitHub Pages
 
-GitHub Pages 主页 <https://ocean-sudo.github.io/electronic-badge/> 是**静态项目介绍**，不是在线 USB 控制台，不会远程访问 USB 设备。图片处理、串口桥接及设备控制必须在用户本机运行。主页使用相对资源路径，以便在项目 Pages 路径下正常工作。
+GitHub Pages 展示页 <https://electronic-badge-project.github.io/electronic-badge/> 由独立组织仓库 [electronic-badge-project/electronic-badge](https://github.com/electronic-badge-project/electronic-badge) 托管，仅提供**静态项目介绍**，不是在线 USB 控制台，也不会远程访问 USB 设备。图片处理、串口桥接及设备控制必须在用户本机运行。本源码仓库的 docs/ 是介绍页的规范素材来源；经审核的内容需手动同步到组织展示仓库，不会由本仓库自动发布。介绍页使用相对资源路径，以便在项目 Pages 路径下正常工作。
 
-源码目录：src/（固件）、web/（本机控制台）、tools/（USB 服务）、tests/（原生逻辑测试）及 docs/（静态项目介绍）。英文补充介绍：[readme_en.md](readme_en.md)。
+源码目录：src/（固件）、web/（本机控制台）、tools/（USB 服务）、tests/（原生逻辑测试）及 docs/（静态项目介绍素材）。英文补充介绍：[readme_en.md](readme_en.md)。

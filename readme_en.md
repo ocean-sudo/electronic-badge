@@ -1,6 +1,6 @@
 # USB Picture Badge
 
-Firmware and a local browser console for the Waveshare ESP32-S3-Touch-AMOLED-1.75C. A Python service on the USB-connected computer controls the device. GitHub Pages is a static project introduction, not an online USB console: image processing, serial bridging, and device control run locally on the user's computer.
+Firmware and a local browser console for the Waveshare ESP32-S3-Touch-AMOLED-1.75C. A Python service on the USB-connected computer controls the device. GitHub Pages hosts a static project introduction, not an online USB console: image processing, serial bridging, and device control run locally on the user's computer. The dedicated display site is hosted by [electronic-badge-project/electronic-badge](https://github.com/electronic-badge-project/electronic-badge); reviewed content is manually synced from this source repository's docs/ directory and is not automatically published from this repository.
 
 The device's screen-off setting only turns off the display. It does not mean ESP32 deep sleep, power-off, or guaranteed reduction of total device power use.
 
@@ -8,7 +8,7 @@ The device's screen-off setting only turns off the display. It does not mean ESP
 
 ![Actual browser console crop preview with synthetic image; offline and disconnected](docs/assets/console-desktop.webp)
 
-[Mobile-size console screenshot](docs/assets/console-mobile.webp) · [Chinese primary README](README.md) · [Chinese project site entry](https://ocean-sudo.github.io/electronic-badge/)
+[Mobile-size console screenshot](docs/assets/console-mobile.webp) · [Chinese primary README](README.md) · [Chinese project introduction](https://electronic-badge-project.github.io/electronic-badge/)
 
 ## Features
 
