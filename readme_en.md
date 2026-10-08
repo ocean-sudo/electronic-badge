@@ -1,6 +1,6 @@
 # USB Picture Badge
 
-Firmware and a local browser console for the Waveshare ESP32-S3-Touch-AMOLED-1.75C. A Python service on the USB-connected computer controls the device. GitHub Pages hosts a static project introduction, not an online USB console: image processing, serial bridging, and device control run locally on the user's computer. The dedicated display site is hosted by [electronic-badge-project/electronic-badge](https://github.com/electronic-badge-project/electronic-badge); reviewed content is manually synced from this source repository's docs/ directory and is not automatically published from this repository.
+Firmware and a pure HTTPS Web Serial controller for the Waveshare ESP32-S3-Touch-AMOLED-1.75C. Supported desktop browsers talk directly to the USB serial port; no PWA, Python serial bridge, native helper, or cloud image service is required. The production Pages site is hosted by [electronic-badge-project/electronic-badge](https://github.com/electronic-badge-project/electronic-badge); reviewed content is manually synced from this source repository's `docs/` directory and is not automatically deployed by commits here.
 
 The device's screen-off setting only turns off the display. It does not mean ESP32 deep sleep, power-off, or guaranteed reduction of total device power use.
 
@@ -8,7 +8,7 @@ The device's screen-off setting only turns off the display. It does not mean ESP
 
 ![Actual browser console crop preview with synthetic image; offline and disconnected](docs/assets/console-desktop.webp)
 
-[Mobile-size console screenshot](docs/assets/console-mobile.webp) · [Chinese primary README](README.md) · [Chinese project introduction](https://electronic-badge-project.github.io/electronic-badge/)
+[Open the hosted controller](https://electronic-badge-project.github.io/electronic-badge/console/) · [Mobile-size screenshot](docs/assets/console-mobile.webp) · [Chinese primary README](README.md) · [Chinese project introduction](https://electronic-badge-project.github.io/electronic-badge/)
 
 ## Features
 
@@ -18,19 +18,15 @@ The device's screen-off setting only turns off the display. It does not mean ESP
 - Separate USB/battery idle screen-off settings and PMU-reported charging status. USB connection alone does not imply charging.
 - Image storage and transfer are CRC checked; failed uploads do not replace the prior image.
 
-## Run the local console
+## Use the HTTPS Web Serial controller
 
-Requires Python 3.10+, a data-capable USB cable, and serial-port permission. From the repository root:
+Use a desktop Chromium-family browser or Firefox 151+, a data-capable USB cable, and an OS account with serial-port access. Open <https://electronic-badge-project.github.io/electronic-badge/console/>, click **Connect badge**, and choose the badge in the browser's serial picker. The project does not apply an unverified USB VID/PID filter, so verify the selected device. The page opens it at 115200 baud, reads `STATUS` and the CRC-protected catalog, and enables controls only after that succeeds.
 
-```sh
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-python tools/serve.py
-```
+The controller is static HTML/CSS/JavaScript. Cropping, JPEG encoding, exact-length binary framing, and CRC validation happen in the browser; images travel directly to firmware through Web Serial. Uploads follow `READY`, one `ACK` per 4096-byte firmware chunk, and final `OK <slot>`. Downloads consume exactly the length announced by `DATA <length> <crc>`, validate CRC, then validate the separator and final reply.
 
-Open <http://127.0.0.1:8765/>. The service defaults to loopback and detects supported Espressif USB VID/PID; if multiple ports are present, pass --serial <your-port>. The service has no authentication: keep it on loopback by default; do not expose it through public port forwarding or Tailscale Funnel. Private settings belong only in the local, untracked `.env`.
+Serial permission belongs to the **origin (scheme + hostname + port)**, not the repository path. Pages for different repositories under the same `*.github.io` hostname can therefore be same-origin, and same-origin scripts may enumerate previously granted ports. Grant access only to a site you trust; use a dedicated custom subdomain when strict isolation is required. The chooser must be triggered by user action. A single previously granted port is reused only after the user clicks Connect; otherwise the chooser is shown. The page provides explicit disconnect and handles stream cancellation, lock release, physical disconnect, and reboot reconnection.
+
+`docs/console/index.html` is the one controller source and the Pages artifact. `web/index.html` only redirects source-tree users to it, so controller logic is not duplicated. The production Pages repository is separate: publishing requires reviewed manual synchronization of the complete `docs/` tree to `electronic-badge-project/electronic-badge`; this source repository does not auto-deploy it.
 
 ## Build and update safely
 
@@ -48,4 +44,4 @@ Two RGB565 source frames, two output frames, and one USB/menu working frame use 
 
 ## Privacy and AI-assisted deployment
 
-Never share `.env`, private photos or backups, tokens, private domains, or device serial numbers with public chats, issues, or remote AI. Share only `.env.example`, system details, and redacted errors; enter private values locally. A local agent must not echo or commit secrets. The Chinese primary README includes a copyable prompt that asks an AI to generate reviewed, non-destructive steps; there is no one-click deployment.
+Never share private photos or backups, tokens, private domains, or device serial numbers in public chats, issues, or remote AI services. The controller needs no `.env`, account, or cloud credential. Share only system details and redacted errors. The Chinese primary README includes a copyable prompt for reviewed, non-destructive firmware steps; there is no one-click deployment or flashing from the controller.

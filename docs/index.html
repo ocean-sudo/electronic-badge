@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101927">
-  <meta name="description" content="USB 图片徽章：ESP32-S3 圆形图片徽章固件与本地网页控制台。">
-  <title>USB 图片徽章｜本地控制，随身展示</title>
+  <meta name="description" content="USB 图片徽章：ESP32-S3 圆形图片徽章固件与 Web Serial 控制台。">
+  <title>USB 图片徽章｜浏览器直连，随身展示</title>
   <link rel="icon" href="assets/showcase.svg" type="image/svg+xml">
   <link rel="stylesheet" href="assets/site.css">
 </head>
@@ -15,6 +15,7 @@
     <nav aria-label="主导航">
       <a href="#features">功能</a>
       <a href="#console">控制台预览</a>
+      <a href="console/">打开控制台</a>
       <a href="#how">使用方式</a>
       <a href="#limits">实测边界</a>
       <a href="#safe">安全部署</a>
@@ -25,11 +26,11 @@
   <main id="top">
     <section class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">ESP32-S3 · 圆形屏幕 · 本地控制</p>
+        <p class="eyebrow">ESP32-S3 · 圆形屏幕 · Web Serial</p>
         <h1>让喜欢的画面，<br><em>成为随身徽章。</em></h1>
-        <p class="lede">为圆形图片徽章提供固件与本地网页控制台：在电脑上裁切、管理图片，由设备独立显示、轮播与熄屏。</p>
-        <a class="button" href="https://github.com/ocean-sudo/electronic-badge">浏览 GitHub 源码 ↗</a>
-        <p class="fine">适配 Waveshare ESP32-S3-Touch-AMOLED-1.75C</p>
+        <p class="lede">通过 HTTPS 静态页面在电脑浏览器中裁切、管理图片，并用 Web Serial 直连徽章；无需安装 PWA、本机服务或原生助手。</p>
+        <a class="button" href="console/">打开 Web Serial 控制台 →</a>
+        <p class="fine">适配 Waveshare ESP32-S3-Touch-AMOLED-1.75C · 桌面 Chromium / Firefox 151+</p>
       </div>
       <figure class="hero-art">
         <img src="assets/showcase.svg" alt="原创几何合成插画；演示界面，合成素材，不连接真实设备">
@@ -59,9 +60,9 @@
     </section>
 
     <section class="section console-section" id="console">
-      <p class="eyebrow">实际控制台 · 离线预览</p>
-      <h2>本机网页界面，不是云端控制器。</h2>
-      <p class="section-copy">截图来自项目实际控制台；裁切预览中的画面为原创合成素材。为保护设备，截图时未连接徽章，设备 API 请求在浏览器端拦截；因此状态显示未连接，上传不可用。该图不是实机照片，也不是模拟设备数据。</p>
+      <p class="eyebrow">实际控制台 · HTTPS 静态页面</p>
+      <h2>浏览器通过 Web Serial 直接控制徽章。</h2>
+      <p class="section-copy">截图来自项目实际控制台；裁切预览中的画面为原创合成素材，截图时未连接徽章。控制台本身可在支持 Web Serial 的桌面 Chromium 或 Firefox 151+ 中使用：点击连接后由浏览器显示串口选择器，页面不会把图片上传到云端。</p>
       <figure class="console-shot">
         <picture>
           <source media="(max-width: 620px)" srcset="assets/console-mobile.webp">
@@ -73,22 +74,24 @@
         <a href="assets/console-desktop.webp">查看桌面截图</a>
         <a href="assets/console-mobile.webp">查看手机截图</a>
       </div>
+        <a href="console/">打开控制台</a>
     </section>
 
     <section class="section how" id="how">
       <div>
-        <p class="eyebrow">本地运行</p>
-        <h2>控制服务在你的电脑上。</h2>
-        <p>图片处理与 USB 串口服务只在用户本机运行。GitHub Pages 是静态项目介绍，不连接徽章，也不提供在线控制台。</p>
+        <p class="eyebrow">直接连接</p>
+        <h2>静态页面直连 USB 串口。</h2>
+        <p>连接数据线后，在支持 Web Serial 的桌面浏览器中打开控制台并点击“连接徽章”。浏览器权限选择必须由用户操作触发，不需要 Python 服务、PWA 或本机助手。</p>
         <ol>
-          <li>安装 Python 依赖并连接 USB</li>
-          <li>在本机启动服务并打开网页</li>
-          <li>裁切图片，确认后上传到徽章</li>
+          <li>使用 HTTPS 打开控制台并连接 USB</li>
+          <li>在浏览器设备选择器中选择徽章串口</li>
+          <li>裁切图片，确认后直接传到徽章</li>
         </ol>
       </div>
+        <p>串口权限绑定 origin，而不是项目路径；同一 <code>*.github.io</code> 主机名下的其他仓库页面可能同源并枚举已授权端口。只在信任的站点授权；需要隔离时使用专用自定义子域。</p>
       <figure>
-        <img src="assets/architecture.svg" alt="本机浏览器通过 Python USB 串口服务连接图片徽章的结构图" loading="lazy">
-        <figcaption>控制链路留在本机；项目介绍页不接入设备。</figcaption>
+        <img src="assets/architecture.svg" alt="HTTPS 浏览器页面通过 Web Serial 直接连接图片徽章的结构图" loading="lazy">
+        <figcaption>页面静态托管；图片处理和 USB 数据传输留在浏览器与本机设备之间。</figcaption>
       </figure>
     </section>
 
@@ -110,10 +113,10 @@
         <p>仓库提供可复制的提示词与手动步骤。先逐条审阅命令；已有设备升级仅写应用分区，保留文件系统和设备设置。</p>
       </div>
       <aside class="safe-card">
-        <p>✓ 默认只监听本机回环地址</p>
-        <p>✓ 服务没有登录认证，不要公开暴露</p>
+        <p>✓ 串口选择器必须由用户点击触发</p>
+        <p>✓ 权限按 origin 保存，只授权信任的站点</p>
         <p>✓ 旧 v1 图片需在升级前导出、备份并转换</p>
-        <a href="https://github.com/ocean-sudo/electronic-badge#ai-deployment">查看 AI 部署与迁移说明 →</a>
+        <a href="console/">打开 Web Serial 控制台 →</a>
       </aside>
     </section>
   </main>
@@ -124,6 +127,7 @@
     <a href="https://github.com/ocean-sudo/electronic-badge">GitHub 项目仓库 ↗</a>
     <a href="assets/homepage-desktop.webp">桌面主页截图</a>
     <a href="assets/homepage-mobile.webp">手机主页截图</a>
+    <a href="console/">Web Serial 控制台</a>
   </footer>
 </body>
 </html>
