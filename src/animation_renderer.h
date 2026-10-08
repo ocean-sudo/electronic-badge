@@ -7,6 +7,7 @@ namespace badge_animation {
 constexpr int Width = 466;
 constexpr int Height = 466;
 
+
 // Call before rendering. Repeated calls are harmless; the row table is built once.
 void initialize();
 
@@ -27,8 +28,10 @@ void renderSlide(const uint16_t* oldImage, const uint16_t* newImage,
                  bool rotateIncoming = false, uint16_t incomingAngle = 0);
 // Reveal newImage with an expanding circular wavefront. Progress is 0..255;
 // sources are immutable and output must not alias either source. The panel's
-// exterior remains black at every progress value.
+// exterior remains black at every progress value. When requested, the incoming
+// source is sampled at incomingAngle (clockwise) without scratch buffers.
 void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
-                  uint16_t* output, uint8_t progress);
+                  uint16_t* output, uint8_t progress,
+                  bool rotateIncoming = false, uint16_t incomingAngle = 0);
 
 }  // namespace badge_animation

@@ -4,6 +4,7 @@
 #include <esp_heap_caps.h>
 #include "display/Arduino_CO5300.h"
 #include "animation_renderer.h"
+#include "rotation_clock.h"
 #include "badge_qspi.h"
 
 struct PanelScan {
@@ -40,7 +41,7 @@ class PictureAnimation {
   bool active() const { return hasImage_ && !*error && (phase_ != Idle || motion != 0); }
   bool transitioning() const { return phase_ != Idle; }
   uint16_t angle() const {
-    return motion == 3 ? presentedGravityAngle_ : motion == 2 ? static_cast<uint16_t>(motionElapsed_ * 36U / rotationPeriod) : 0;
+    return motion == 3 ? presentedGravityAngle_ : motion == 2 ? rotationClock_.angle(rotationPeriod) : 0;
   }
 
   void gravityAngle(uint16_t value) { gravityAngle_ = value; }
@@ -50,7 +51,8 @@ class PictureAnimation {
     transition = newTransition;
     motion = newMotion;
     rotationPeriod = period;
-    motionElapsed_ = 0;
+    rotationClock_.reset();
+    inheritedPosePending_ = false;
     error = "";
     pauseClock();
   }
@@ -76,8 +78,11 @@ class PictureAnimation {
     if (!ready_) return "psram_unavailable";
     const bool previous = hasImage_ && hasFrame_;
     cancel(brightness);
-    selection_ = {imageIndex_, front_, shiftPose_, motionElapsed_,
-                  presentedGravityAngle_, hasImage_, hasFrame_};
+    selection_ = {imageIndex_, front_, shiftPose_, motionElapsed_, rotationClock_.elapsedMs(),
+                  rotationClock_.presentedAngle(), presentedGravityAngle_, transitionAngle_,
+                  hasImage_, hasFrame_, inheritedPosePending_};
+    transitionAngle_ = motion == 3 ? gravityAngle_
+                       : motion == 2 ? rotationClock_.presentedAngle() : angle();
     selectionPending_ = true;
     selectionPhase_ = Idle;
     if (animate && previous && displayNow) {
@@ -88,9 +93,9 @@ class PictureAnimation {
         default: break;
       }
     }
+    inheritedPosePending_ = motion == 2 && selectionPhase_ == Idle;
     imageIndex_ ^= 1U;
     hasImage_ = true;
-    motionElapsed_ = 0;
     error = "";
     started_ = millis();
     lastFrame_ = started_ - kFrameInterval;
@@ -119,7 +124,10 @@ class PictureAnimation {
     front_ = selection_.front;
     shiftPose_ = selection_.shift;
     motionElapsed_ = selection_.motion;
+    rotationClock_.restore(selection_.rotationElapsed, selection_.rotationPresented);
     presentedGravityAngle_ = selection_.gravity;
+    transitionAngle_ = selection_.transitionAngle;
+    inheritedPosePending_ = selection_.inheritedPosePending;
     hasImage_ = selection_.hasImage;
     hasFrame_ = selection_.hasFrame;
     phase_ = Idle;
@@ -148,6 +156,9 @@ class PictureAnimation {
     const uint32_t elapsed = now - lastTick_;
     lastTick_ = now;
     if (!enabled || !ready_ || !hasImage_ || *error) return;
+    if (motion == 2) {
+      rotationClock_.advance(elapsed, rotationPeriod * 1000U);
+    }
     if (phase_ == FadeOut || phase_ == FadeIn) {
       const uint32_t duration = phase_ == FadeOut ? 130U : 170U;
       const uint32_t time = now - started_;
@@ -176,8 +187,11 @@ class PictureAnimation {
       const uint32_t rendering = micros();
       // Sample the incoming canonical source directly at its gravity pose.
       // Never use the published front buffer as unsubmitted render scratch.
+      const uint16_t incomingAngle = motion == 3 ? gravityAngle_ : angle();
+      renderedRotationAngle_ = incomingAngle;
       badge_animation::renderSlide(images_[imageIndex_ ^ 1U], images_[imageIndex_],
-                                  outputs_[front_ ^ 1U], offset, motion == 3, gravityAngle_);
+                                  outputs_[front_ ^ 1U], offset, motion == 2 || motion == 3,
+                                  incomingAngle);
       if (!present(true)) { cancel(brightness); return; }
       frameMs = (micros() - rendering + 999U) / 1000U;
       lastFrame_ = now;
@@ -190,8 +204,11 @@ class PictureAnimation {
       if (now - lastFrame_ < kFrameInterval && time < duration) return;
       const uint8_t progress = time >= duration ? 255U : static_cast<uint8_t>(time * 255U / duration);
       const uint32_t rendering = micros();
+      const uint16_t incomingAngle = motion == 3 ? gravityAngle_ : angle();
+      renderedRotationAngle_ = incomingAngle;
       badge_animation::renderRipple(images_[imageIndex_ ^ 1U], images_[imageIndex_],
-                                    outputs_[front_ ^ 1U], progress);
+                                    outputs_[front_ ^ 1U], progress,
+                                    motion == 2 || motion == 3, incomingAngle);
       if (!present(true)) { cancel(brightness); return; }
       frameMs = (micros() - rendering + 999U) / 1000U;
       lastFrame_ = now;
@@ -199,10 +216,7 @@ class PictureAnimation {
       return;
     }
     if (!motion) return;
-    if (motion != 3) {
-      const uint32_t period = motion == 2 ? rotationPeriod * 1000U : 60000U;
-      motionElapsed_ = (motionElapsed_ + elapsed) % period;
-    }
+    if (motion == 1) motionElapsed_ = (motionElapsed_ + elapsed) % 60000U;
     if (now - lastFrame_ < kFrameInterval) return;
     if (motion == 3 && hasFrame_ && gravityAngle_ == presentedGravityAngle_) return;
     if (motion == 1) {
@@ -239,7 +253,10 @@ class PictureAnimation {
 
   void renderCurrent(uint16_t *output) {
     if (motion == 2 || motion == 3) {
-      badge_animation::renderRotation(images_[imageIndex_], output, motion == 3 ? gravityAngle_ : angle());
+      const uint16_t pose = motion == 3 ? gravityAngle_
+                           : inheritedPosePending_ ? transitionAngle_ : angle();
+      if (motion == 2) renderedRotationAngle_ = pose;
+      badge_animation::renderRotation(images_[imageIndex_], output, pose);
     } else if (motion == 1) {
       static constexpr int8_t positions[8][2] = {{0, 0}, {1, 0}, {2, 1}, {1, 2}, {0, 1}, {-1, 0}, {-2, -1}, {-1, -2}};
       const unsigned pose = motionElapsed_ / 7500U;
@@ -277,8 +294,11 @@ class PictureAnimation {
     display_.draw16bitRGBBitmap(0, 0, outputs_[front_ ^ 1U], 466, 466);
     transferUs = micros() - sending;
     if (!bus_.pixelOk) { error = "display_transfer"; return false; }
-    front_ ^= 1U;
     presentedGravityAngle_ = gravityAngle_;
+    if (motion == 2) {
+      rotationClock_.recordPresented(renderedRotationAngle_);
+      inheritedPosePending_ = false;
+    }
     hasFrame_ = true;
     if (synchronize && phaseUs + transferUs + 1000U >= period * 2U) {
       error = "transfer_exceeds_scan_window";
@@ -296,12 +316,14 @@ class PictureAnimation {
   bool ready_ = false, hasImage_ = false, hasFrame_ = false;
   Phase phase_ = Idle;
   uint32_t started_ = 0, lastFrame_ = 0, lastTick_ = 0, motionElapsed_ = 0;
-  uint16_t gravityAngle_ = 0, presentedGravityAngle_ = 0;
+  uint16_t gravityAngle_ = 0, presentedGravityAngle_ = 0, transitionAngle_ = 0, renderedRotationAngle_ = 0;
+  badge_animation::RotationClock rotationClock_;
+  bool inheritedPosePending_ = false;
   struct SelectionState {
     unsigned image, front, shift;
-    uint32_t motion;
-    uint16_t gravity;
-    bool hasImage, hasFrame;
+    uint32_t motion, rotationElapsed;
+    uint16_t rotationPresented, gravity, transitionAngle;
+    bool hasImage, hasFrame, inheritedPosePending;
   } selection_ = {};
   bool selectionPending_ = false;
   Phase selectionPhase_ = Idle;

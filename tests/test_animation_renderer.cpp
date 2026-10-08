@@ -1,5 +1,6 @@
 #include "animation_renderer.h"
 
+#include <algorithm>
 #include <cassert>
 #include <climits>
 #include <cstdint>
@@ -61,6 +62,7 @@ void checkBilinearChannels() {
   assert(source == original);
 }
 
+
 void checkSlideAndShift() {
   std::vector<uint16_t> oldImage(N), newImage(N), output(N);
   for (int i = 0; i < N; ++i) {
@@ -79,8 +81,18 @@ void checkSlideAndShift() {
       }
     }
   }
-  badge_animation::renderSlide(oldImage.data(), newImage.data(), output.data(), UINT_MAX);
-  assert(output[233 * W + 233] == newImage[233 * W + 233]);
+  std::vector<uint16_t> rotated(N);
+  badge_animation::renderRotation(newImage.data(), rotated.data(), 4500);
+  badge_animation::renderSlide(oldImage.data(), newImage.data(), output.data(), W, true, 4500);
+  assert(output == rotated);
+  const unsigned middleOffset = 350;
+  const int incomingX = 280, incomingY = 232;
+  badge_animation::renderSlide(oldImage.data(), newImage.data(), output.data(),
+                               middleOffset, true, 4500);
+  assert(output[incomingY * W + (W - middleOffset + incomingX)] ==
+         rotated[incomingY * W + incomingX]);
+  assert(output[232 * W + 100] == oldImage[232 * W + 450]);
+
   for (int dx : {-465, -2, 0, 2, 465}) {
     for (int dy : {-465, -1, 0, 1, 465}) {
       badge_animation::renderShift(oldImage.data(), output.data(), dx, dy);
@@ -145,6 +157,19 @@ void checkRipple() {
   assert(output[0] == 0);
   assert(guarded.front() == 0xA55A && guarded.back() == 0xA55A);
   assert(oldImage == oldOriginal && newImage == newOriginal);
+  std::vector<uint16_t> patterned(N), rotated(N);
+  for (int i = 0; i < N; ++i) patterned[i] = static_cast<uint16_t>(i * 997U);
+  const auto patternedOriginal = patterned;
+  badge_animation::renderRotation(patterned.data(), rotated.data(), 4500);
+  badge_animation::renderRipple(oldImage.data(), patterned.data(), output, 255, true, 4500);
+  assert(std::equal(output, output + N, rotated.begin()));
+  assert(guarded.front() == 0xA55A && guarded.back() == 0xA55A);
+  badge_animation::renderRipple(oldImage.data(), patterned.data(), output, 128, true, 4500);
+  assert(output[232 * W + 260] == rotated[232 * W + 260]);
+  assert(output[232 * W + 400] == oldImage[232 * W + 400]);
+  assert(output[0] == 0);
+  assert(guarded.front() == 0xA55A && guarded.back() == 0xA55A);
+  assert(patterned == patternedOriginal && oldImage == oldOriginal);
 }
 } // namespace
 

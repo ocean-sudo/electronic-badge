@@ -221,7 +221,8 @@ void renderSlide(const uint16_t* oldImage, const uint16_t* newImage,
   }
 }
 void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
-                  uint16_t* output, uint8_t progress) {
+                  uint16_t* output, uint8_t progress,
+                  bool rotateIncoming, uint16_t incomingAngle) {
   constexpr int32_t BandWidth = 12;  // Six pixels on each side of the wavefront.
   const int32_t radius = static_cast<int32_t>(progress) * Width / 255;
   const int32_t innerRadius = radius > BandWidth ? radius - BandWidth : 0;
@@ -230,6 +231,10 @@ void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
   const int32_t innerSquared = innerRadius * innerRadius;
   const int32_t outerSquared = outerRadius * outerRadius;
   const bool drawBands = progress != 0 && progress != 255 && radius > BandWidth;
+  const unsigned angle = incomingAngle % 36000U;
+  int32_t cosine = One, sine = 0;
+  if (rotateIncoming) rotationCoefficients(angle, cosine, sine);
+  const bool exactQuarterTurn = angle % 9000U == 0U;
 
   for (int y = 0; y < Height; ++y) {
     const int begin = rowStart[y];
@@ -238,6 +243,9 @@ void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
     clearOutside(row, begin, end);
     const int32_t dy = 2 * y - (Height - 1);
     const int32_t dySquared = dy * dy;
+    const int32_t doubledX = 2 * begin - (Width - 1);
+    int32_t sourceX = Center + (cosine * doubledX + sine * dy) / 2;
+    int32_t sourceY = Center + (-sine * doubledX + cosine * dy) / 2;
     for (int x = begin; x < end; ++x) {
       const int32_t dx = 2 * x - (Width - 1);
       const int32_t distanceSquared = dx * dx + dySquared;
@@ -245,7 +253,16 @@ void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
       const size_t sourceIndex = static_cast<size_t>(y) * Width + index;
       const bool revealed = progress == 255 ||
                             (progress != 0 && distanceSquared <= radiusSquared);
-      uint16_t pixel = (revealed ? newImage : oldImage)[sourceIndex];
+      uint16_t pixel;
+      if (!revealed) {
+        pixel = oldImage[sourceIndex];
+      } else if (!rotateIncoming) {
+        pixel = newImage[sourceIndex];
+      } else if (exactQuarterTurn) {
+        pixel = newImage[(sourceY / One) * Width + sourceX / One];
+      } else {
+        pixel = interpolate(newImage, sourceX, sourceY);
+      }
       if (drawBands && distanceSquared >= innerSquared &&
           distanceSquared <= radiusSquared) {
         const uint32_t red = (pixel >> 11) & 31U;
@@ -264,6 +281,8 @@ void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
                                       (blue - (blue >> 2)));
       }
       row[index] = pixel;
+      sourceX += cosine;
+      sourceY -= sine;
     }
   }
 }
