@@ -36,7 +36,7 @@ Only a confirmed blank, new device may use the initial PlatformIO `upload`, whic
 
 **v1 stores images as RGB565, which v2 does not read or migrate.** Before upgrading, export images using v1 while that firmware and its tools are still available, verify an offline backup, and convert the images to 466×466 JPEG. Keep the backup until the migrated JPEGs have been imported and verified in v2.
 
-For an existing device, write only the new `firmware.bin` to the APP partition at `0x10000`. Do not use PlatformIO full upload, uploadfs, whole-chip erase, or restore an old full-flash image when device data must be preserved. LittleFS is mounted without automatic formatting; screen-off is not deep sleep or power-off.
+For an existing device, write only the new firmware.bin to the APP partition at 0x10000. Do not use PlatformIO full upload, uploadfs, whole-chip erase, or restore an old full-flash image when device data must be preserved. LittleFS is mounted without automatic formatting. In USB/VBUS or unknown-source screen-off mode the display sleeps while USB stays online; manual battery SLEEP and unplugging USB while screen-off request PMIC software shutdown rather than ESP32 deep sleep.
 
 ## Measured memory and performance
 
