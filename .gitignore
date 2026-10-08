@@ -1,7 +1,6 @@
 # Local environment configuration; publish only the safe root template.
 .env
 .env.*
-!/.env.example
 .venv/
 venv/
 
