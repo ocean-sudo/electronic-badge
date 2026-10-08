@@ -220,5 +220,52 @@ void renderSlide(const uint16_t* oldImage, const uint16_t* newImage,
     }
   }
 }
+void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
+                  uint16_t* output, uint8_t progress) {
+  constexpr int32_t BandWidth = 12;  // Six pixels on each side of the wavefront.
+  const int32_t radius = static_cast<int32_t>(progress) * Width / 255;
+  const int32_t innerRadius = radius > BandWidth ? radius - BandWidth : 0;
+  const int32_t outerRadius = radius + BandWidth;
+  const int32_t radiusSquared = radius * radius;
+  const int32_t innerSquared = innerRadius * innerRadius;
+  const int32_t outerSquared = outerRadius * outerRadius;
+  const bool drawBands = progress != 0 && progress != 255 && radius > BandWidth;
+
+  for (int y = 0; y < Height; ++y) {
+    const int begin = rowStart[y];
+    const int end = rowEnd[y];
+    uint16_t* row = output + static_cast<size_t>(y) * Width;
+    clearOutside(row, begin, end);
+    const int32_t dy = 2 * y - (Height - 1);
+    const int32_t dySquared = dy * dy;
+    for (int x = begin; x < end; ++x) {
+      const int32_t dx = 2 * x - (Width - 1);
+      const int32_t distanceSquared = dx * dx + dySquared;
+      const size_t index = static_cast<size_t>(x);
+      const size_t sourceIndex = static_cast<size_t>(y) * Width + index;
+      const bool revealed = progress == 255 ||
+                            (progress != 0 && distanceSquared <= radiusSquared);
+      uint16_t pixel = (revealed ? newImage : oldImage)[sourceIndex];
+      if (drawBands && distanceSquared >= innerSquared &&
+          distanceSquared <= radiusSquared) {
+        const uint32_t red = (pixel >> 11) & 31U;
+        const uint32_t green = (pixel >> 5) & 63U;
+        const uint32_t blue = pixel & 31U;
+        pixel = static_cast<uint16_t>(((red + ((31U - red) >> 2)) << 11) |
+                                      ((green + ((63U - green) >> 2)) << 5) |
+                                      (blue + ((31U - blue) >> 2)));
+      } else if (drawBands && distanceSquared > radiusSquared &&
+                 distanceSquared <= outerSquared) {
+        const uint32_t red = (pixel >> 11) & 31U;
+        const uint32_t green = (pixel >> 5) & 63U;
+        const uint32_t blue = pixel & 31U;
+        pixel = static_cast<uint16_t>(((red - (red >> 2)) << 11) |
+                                      ((green - (green >> 2)) << 5) |
+                                      (blue - (blue >> 2)));
+      }
+      row[index] = pixel;
+    }
+  }
+}
 
 }  // namespace badge_animation

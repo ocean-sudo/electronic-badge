@@ -34,7 +34,7 @@ void layout() {
       const bool shuffle = !std::strcmp(button.action, "shuffle");
       const bool cut = !std::strcmp(button.action, "transition_next");
       const bool motion = !std::strcmp(button.action, "motion_next");
-      const unsigned states = motion ? 4 : cut ? 3 : automatic || shuffle ? 2 : 1;
+      const unsigned states = motion ? 4 : cut ? 4 : automatic || shuffle ? 2 : 1;
       for (unsigned state = 0; state < states; ++state) {
         const char *label = menuButtonLabel(button, automatic && state, shuffle && state,
                                            cut ? state : 0, motion ? state : 0);
@@ -98,4 +98,4 @@ void battery() {
   assert(BatteryStatus::decode(0x08, 0, 0xA0).charging == 1);
 }
 }
-int main() { layout(); matrix(); battery(); std::cout << "native menu/battery tests passed\n"; }
+int main() { layout(); matrix(); transitionLabels(); battery(); std::cout << "native menu/battery tests passed\n"; }

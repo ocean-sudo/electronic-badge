@@ -92,7 +92,7 @@ inline const char *menuButtonLabel(const MenuButton &button, bool slideshow,
   if (!strcmp(button.action, "slideshow")) return slideshow ? "AUTO: ON" : "AUTO: OFF";
   if (!strcmp(button.action, "shuffle")) return shuffle ? "SHUFFLE: ON" : "SHUFFLE: OFF";
   if (!strcmp(button.action, "transition_next")) {
-    constexpr const char *labels[] = {"CUT: DIRECT", "CUT: FADE", "CUT: SLIDE"};
+    constexpr const char *labels[] = {"CUT: DIRECT", "CUT: FADE", "CUT: SLIDE", "CUT: RIPPLE"};
     return labels[transition];
   }
   if (!strcmp(button.action, "motion_next")) {

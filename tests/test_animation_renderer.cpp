@@ -100,12 +100,59 @@ void checkSlideAndShift() {
   }
   assert(oldImage == savedOld && newImage == savedNew);
 }
+uint16_t brighter(uint16_t pixel) {
+  const uint32_t red = (pixel >> 11) & 31U;
+  const uint32_t green = (pixel >> 5) & 63U;
+  const uint32_t blue = pixel & 31U;
+  return static_cast<uint16_t>(((red + ((31U - red) >> 2)) << 11) |
+                               ((green + ((63U - green) >> 2)) << 5) |
+                               (blue + ((31U - blue) >> 2)));
+}
+
+uint16_t dimmer(uint16_t pixel) {
+  const uint32_t red = (pixel >> 11) & 31U;
+  const uint32_t green = (pixel >> 5) & 63U;
+  const uint32_t blue = pixel & 31U;
+  return static_cast<uint16_t>(((red - (red >> 2)) << 11) |
+                               ((green - (green >> 2)) << 5) |
+                               (blue - (blue >> 2)));
+}
+
+void checkRipple() {
+  std::vector<uint16_t> oldImage(N, 0x4208), newImage(N, 0x1A35);
+  const auto oldOriginal = oldImage;
+  const auto newOriginal = newImage;
+  std::vector<uint16_t> guarded(N + 2, 0xA55A);
+  uint16_t* output = guarded.data() + 1;
+
+  badge_animation::renderRipple(oldImage.data(), newImage.data(), output, 0);
+  assert(guarded.front() == 0xA55A && guarded.back() == 0xA55A);
+  assert(output[232 * W + 232] == 0x4208);
+  assert(output[0] == 0);  // Circular panel exterior remains black.
+  assert(output[232 * W + 0] == 0x4208);
+
+  badge_animation::renderRipple(oldImage.data(), newImage.data(), output, 128);
+  assert(output[232 * W + 232] == 0x1A35);  // Center has been revealed.
+  assert(output[232 * W + 348] == brighter(0x1A35));  // Bright inner band.
+  assert(output[232 * W + 350] == dimmer(0x4208));   // Dark outer band.
+  assert(output[232 * W + 400] == 0x4208);  // Beyond the wavefront.
+  assert(output[0] == 0);
+  assert(guarded.front() == 0xA55A && guarded.back() == 0xA55A);
+
+  badge_animation::renderRipple(oldImage.data(), newImage.data(), output, 255);
+  assert(output[232 * W + 232] == 0x1A35);
+  assert(output[232 * W + 0] == 0x1A35);
+  assert(output[0] == 0);
+  assert(guarded.front() == 0xA55A && guarded.back() == 0xA55A);
+  assert(oldImage == oldOriginal && newImage == newOriginal);
+}
 } // namespace
 
 int main() {
   badge_animation::initialize();
   checkUniformAndCardinals();
   checkBilinearChannels();
+  checkRipple();
   checkSlideAndShift();
-  std::cout << "PASS: rotation/cardinal/channel/edge/source/slide/shift invariants\n";
+  std::cout << "PASS: rotation/cardinal/channel/edge/source/slide/ripple/shift invariants\n";
 }

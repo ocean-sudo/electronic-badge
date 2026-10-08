@@ -39,7 +39,7 @@ constexpr uint16_t kIntervals[] = {2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 36
 constexpr uint32_t kSleepIntervals[] = {0, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 43200, 86400};
 constexpr uint16_t kRotationPeriods[] = {8, 12, 18, 24, 36, 60, 90, 120};
 constexpr uint8_t kTearingPin = 13; // 1.75C schematic: GPIO13 -> LCD_TE.
-constexpr const char *kTransitions[] = {"direct", "fade", "slide"};
+constexpr const char *kTransitions[] = {"direct", "fade", "slide", "ripple"};
 constexpr const char *kMotions[] = {"off", "shift", "rotate", "gravity"};
 
 

@@ -79,8 +79,15 @@ class PictureAnimation {
     selection_ = {imageIndex_, front_, shiftPose_, motionElapsed_,
                   presentedGravityAngle_, hasImage_, hasFrame_};
     selectionPending_ = true;
-    selectionPhase_ = animate && previous && displayNow && transition != 0
-                    ? (transition == 1 ? FadeOut : Slide) : Idle;
+    selectionPhase_ = Idle;
+    if (animate && previous && displayNow) {
+      switch (transition) {
+        case 1: selectionPhase_ = FadeOut; break;
+        case 2: selectionPhase_ = Slide; break;
+        case 3: selectionPhase_ = Ripple; break;
+        default: break;
+      }
+    }
     imageIndex_ ^= 1U;
     hasImage_ = true;
     motionElapsed_ = 0;
@@ -98,7 +105,7 @@ class PictureAnimation {
     if (!selectionPending_) return;
     // This is the asynchronous acceptance boundary. Later DMA errors do not
     // undo an accepted player step. Slide freezes the outgoing presented pose.
-    if (selectionPhase_ == Slide)
+    if (selectionPhase_ == Slide || selectionPhase_ == Ripple)
       memcpy(images_[selection_.image], outputs_[selection_.front], kBytes);
     phase_ = selectionPhase_;
     started_ = millis();
@@ -177,6 +184,20 @@ class PictureAnimation {
       if (offset == 466U) { phase_ = Idle; pauseClock(); }
       return;
     }
+    if (phase_ == Ripple) {
+      constexpr uint32_t duration = 400U;
+      const uint32_t time = now - started_;
+      if (now - lastFrame_ < kFrameInterval && time < duration) return;
+      const uint8_t progress = time >= duration ? 255U : static_cast<uint8_t>(time * 255U / duration);
+      const uint32_t rendering = micros();
+      badge_animation::renderRipple(images_[imageIndex_ ^ 1U], images_[imageIndex_],
+                                    outputs_[front_ ^ 1U], progress);
+      if (!present(true)) { cancel(brightness); return; }
+      frameMs = (micros() - rendering + 999U) / 1000U;
+      lastFrame_ = now;
+      if (progress == 255U) { phase_ = Idle; pauseClock(); }
+      return;
+    }
     if (!motion) return;
     if (motion != 3) {
       const uint32_t period = motion == 2 ? rotationPeriod * 1000U : 60000U;
@@ -204,7 +225,7 @@ class PictureAnimation {
   const char *error = "";
 
  private:
-  enum Phase { Idle, FadeOut, FadeIn, Slide };
+  enum Phase { Idle, FadeOut, FadeIn, Slide, Ripple };
   static constexpr size_t kBytes = 466U * 466U * sizeof(uint16_t);
   static constexpr uint32_t kFrameInterval = 100; // Target 10fps; late frames are skipped, never queued.
   // Payload floor at 4-bit 40MHz. Never exceed CO5300's documented 50MHz limit.

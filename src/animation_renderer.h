@@ -25,5 +25,10 @@ void renderShift(const uint16_t* source, uint16_t* output, int dx, int dy);
 void renderSlide(const uint16_t* oldImage, const uint16_t* newImage,
                  uint16_t* output, unsigned offset,
                  bool rotateIncoming = false, uint16_t incomingAngle = 0);
+// Reveal newImage with an expanding circular wavefront. Progress is 0..255;
+// sources are immutable and output must not alias either source. The panel's
+// exterior remains black at every progress value.
+void renderRipple(const uint16_t* oldImage, const uint16_t* newImage,
+                  uint16_t* output, uint8_t progress);
 
 }  // namespace badge_animation

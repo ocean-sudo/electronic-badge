@@ -13,7 +13,7 @@ The device's screen-off setting only turns off the display. It does not mean ESP
 ## Features
 
 - Select, drop, or paste JPG, PNG, or WebP, adjust a circular crop, and preview before explicitly uploading. The browser outputs 466×466 JPEG using Canvas `toBlob` quality parameter 0.85; file size varies by image. WebP is decoded in the browser and converted to JPEG. Firmware uses the ESP32-S3 ROM software TJpgDec JPEG decoder and does not decode WebP.
-- Browse, replace, delete, display, and read back saved JPEGs; adjust brightness, animation, device menus, slideshow, and screen-off settings. Stable image IDs are 0–2147483646; capacity depends on LittleFS space.
+- Browse, replace, delete, display, and read back saved JPEGs; adjust brightness, animation, device menus, slideshow, and screen-off settings. Image transitions include direct, fade, slide, and a low-cost radial ripple whose edge is less soft than a blended transition. Stable image IDs are 0–2147483646; capacity depends on LittleFS space.
 - Firmware-managed slideshow continues without the computer service. Shuffle is opt-in. Playback history retains at most six entries in RAM and resets on reboot.
 - Separate USB/battery idle screen-off settings and PMU-reported charging status. USB connection alone does not imply charging.
 - Image storage and transfer are CRC checked; failed uploads do not replace the prior image.
