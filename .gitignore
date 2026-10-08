@@ -1,4 +1,4 @@
-# Local environment configuration; publish only the safe root template.
+# Local environment configuration; never commit private values.
 .env
 .env.*
 .venv/
