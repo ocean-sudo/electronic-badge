@@ -12,7 +12,7 @@ inline const char *menuTitle(MenuPage page) {
   switch (page) {
     case MenuPage::Playback: return "PLAYBACK";
     case MenuPage::Display: return "DISPLAY";
-    case MenuPage::Timeout: return "SCREEN TIMEOUT";
+    case MenuPage::Timeout: return "POWER / TIMEOUT";
     case MenuPage::Animation: return "ANIMATION";
     default: return "BADGE MENU";
   }
@@ -26,7 +26,7 @@ constexpr MenuButton kMenuButtons[] = {
     {93, 110, 280, 44, "playback", "PLAYBACK"},
     {93, 174, 280, 44, "display", "DISPLAY"},
     {93, 238, 280, 44, "timeout", "TIMEOUT"},
-    {83, 310, 142, 46, "sleep", "SLEEP"},
+    {83, 310, 142, 46, "sleep", "SLEEP/OFF"},
     {241, 310, 142, 46, "back", "BACK"},
 };
 constexpr MenuButton kPlaybackButtons[] = {
@@ -42,7 +42,7 @@ constexpr MenuButton kDisplayButtons[] = {
     {93, 148, 58, 46, "brightness_down", "-"},
     {315, 148, 58, 46, "brightness_up", "+"},
     {93, 228, 280, 46, "animation", "ANIMATION"},
-    {83, 320, 142, 46, "sleep", "SLEEP"},
+    {83, 320, 142, 46, "sleep", "SLEEP/OFF"},
     {241, 320, 142, 46, "back", "BACK"},
 };
 constexpr MenuButton kTimeoutButtons[] = {

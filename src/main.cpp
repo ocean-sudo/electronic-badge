@@ -15,6 +15,7 @@
 #include "display/Arduino_CO5300.h"
 #include "canvas/Arduino_Canvas.h"
 #include "auto_sleep.h"
+#include "power_off.h"
 #include "picture_animation.h"
 #include "gravity_sensor.h"
 #include "native_menu.h"
@@ -48,7 +49,26 @@ Arduino_CO5300 gfx(&bus, LCD_RESET, 0, LCD_WIDTH, LCD_HEIGHT, 6, 0, 0, 0);
 PanelScan panelScan;
 PictureAnimation animation(gfx, bus, panelScan);
 bool animationOk = false;
-TouchDrvCST92xx touch;
+// getPoint() maps I2C/ACK errors to zero points; zero is not proof of release.
+class SleepAwareTouch final : public TouchDrvCST92xx {
+ public:
+  bool confirmedRelease() {
+    uint8_t report[CST92XX_MAX_FINGER_NUM * 5 + 5];
+    uint8_t command[] = {highByte(CST92XX_READ_COMMAND), lowByte(CST92XX_READ_COMMAND), CST92XX_ACK};
+    if (comm->writeThenRead(command, 2, report, sizeof(report)) != 0 ||
+        comm->writeBuffer(command, sizeof(command)) != 0 || report[6] != CST92XX_ACK) return false;
+    const uint8_t count = report[5] & 0x7f;
+    if (count > CST92XX_MAX_FINGER_NUM) return false;
+    for (uint8_t i = 0; i < count; ++i) {
+      const uint8_t contact = report[i * 5 + (i ? 2 : 0)];
+      // Vendor parseFingerData uses event 0x06 for pressed; only an explicit
+      // release (0x00) with a valid finger ID can clear the sleep gate.
+      if ((contact >> 4) >= CST92XX_MAX_FINGER_NUM || (contact & 0x0f) != 0) return false;
+    }
+    return true;
+  }
+};
+SleepAwareTouch touch;
 XPowersPMU power;
 GravitySensor gravity;
 Preferences preferences;
@@ -81,6 +101,11 @@ bool touchOk = false;
 bool storageOk = false;
 bool preferencesOk = false;
 bool pmuOk = false;
+bool pmicPowerKeyActive = false;
+bool pmicPowerOffReady = false;
+enum class PowerOffReason { None, ManualSleep, AutomaticTimeout, ScreenOffBattery };
+PowerOffReason pendingPowerOff = PowerOffReason::None;
+bool autoPowerOffBlocked = false;
 bool sleeping = false;
 uint8_t brightness = 80;
 int current = -1;
@@ -105,6 +130,15 @@ char commandLine[96];
 size_t commandLength = 0;
 bool commandInvalid = false;
 uint32_t commandLastByte = 0;
+
+const char *requestPmicPowerOff(bool automatic);
+void executePmicPowerOff();
+
+bool shutdownInputsIdle() {
+  return PmicPowerOff::inputsIdle({fingerDown, suppressTouch || touchInterrupt,
+      pmicPowerKeyActive, digitalRead(kBootPin) == LOW,
+      commandLength != 0, commandInvalid, Serial.available() != 0});
+}
 
 void IRAM_ATTR onTouch() { touchInterrupt = true; }
 
@@ -131,6 +165,15 @@ void enablePanelSync() {
   bus.writeC8D16(0x44, 0); // CO5300 Set Tear Scanline: vertical porch at line zero.
   bus.writeC8D8(CO5300_WC_TEARON, 0);
   bus.endWrite();
+}
+
+void resetTouchReports() {
+  touch.reset();
+  delay(50);
+  touch.setMaxCoordinates(LCD_WIDTH, LCD_HEIGHT);
+  touch.setMirrorXY(true, true);
+  pinMode(TP_INT, INPUT);
+  attachInterrupt(digitalPinToInterrupt(TP_INT), onTouch, FALLING);
 }
 
 void resetSlideshowTimer() { slideshowStarted = millis(); }
@@ -275,7 +318,7 @@ void drawWelcome() {
   centeredText("PERSONAL", 201, 5, 0xFFFF);
   centeredText("Upload a picture over USB", 275, 2, 0xBDF7);
   centeredText("Tap: next  |  Swipe up: menu", 308, 2, 0xBDF7);
-  centeredText("Hold: sleep / tap: wake", 336, 2, 0xBDF7);
+  centeredText("Hold: sleep  |  PWR: toggle/start", 336, 2, 0xBDF7);
   if (!storageOk || !frame || !preferencesOk) {
     centeredText("Check device status", 372, 2, 0xFC80);
   } else {
@@ -370,13 +413,14 @@ void drawMenu() {
   }
   char value[32];
   if (menuPage == MenuPage::Timeout) {
-    menuText(canvas, "USB POWER", 233, 105, 2, 0xBDF7);
+    menuText(canvas, "USB SCREEN", 233, 105, 2, 0xBDF7);
     timeoutText(value, sizeof(value), autoSleep.usbSeconds);
     menuText(canvas, value, 233, 147, 2, 0xFFFF);
-    menuText(canvas, "BATTERY", 233, 205, 2, 0xBDF7);
+    menuText(canvas, "BATTERY OFF", 233, 205, 2, 0xBDF7);
     timeoutText(value, sizeof(value), autoSleep.batterySeconds);
     menuText(canvas, value, 233, 247, 2, 0xFFFF);
-    menuText(canvas, "OFF = ALWAYS ON", 233, 295, 1, 0xBDF7);
+    menuText(canvas, pmicPowerOffReady ? "PWR HOLD 2 SEC TO TURN ON" : "PMU POWER-OFF UNAVAILABLE",
+             233, 295, 1, pmicPowerOffReady ? 0xBDF7 : 0xFC80);
   } else if (menuPage == MenuPage::Animation) {
     if (!gravity.ok) menuText(canvas, "GRAVITY SENSOR UNAVAILABLE", 233, 225, 1, 0xFC80);
     else if (animation.motion == 3) menuText(canvas, "FLAT: LAST POSE / FIRST: NATIVE", 233, 225, 1, 0xBDF7);
@@ -496,7 +540,20 @@ const char *restorePicture() {
 
 const char *setSleeping(bool value) {
   if (!displayOk) return "display_unavailable";
-  autoSleep.activity(millis());
+  const uint32_t now = millis();
+  autoSleep.activity(now);
+  if (value) {
+    const auto source = AutoSleep::decodeSupply(pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1);
+    if (autoSleep.updateSupply(source, now)) autoPowerOffBlocked = false;
+    if (source == AutoSleep::Supply::Battery) {
+      const char *error = requestPmicPowerOff(false);
+      if (error) return error;
+      menuOpen = false;
+      clearGesture();
+      resetSlideshowTimer();
+      return nullptr;
+    }
+  }
   if (sleeping == value) return nullptr;
   clearGesture();
   resetSlideshowTimer();
@@ -509,8 +566,101 @@ const char *setSleeping(bool value) {
     refreshGravity();
     return nullptr;
   }
+  if (pendingPowerOff == PowerOffReason::ScreenOffBattery) {
+    pendingPowerOff = PowerOffReason::None;
+    autoPowerOffBlocked = false;
+  }
   wakePanel();
   return restorePicture();
+}
+const char *requestPmicPowerOff(bool automatic) {
+  if (!pmuOk) return "pmu_unavailable";
+  if (!pmicPowerOffReady) return "poweroff_unavailable";
+  const uint32_t now = millis();
+  const auto source = AutoSleep::decodeSupply(power.readRegister(XPOWERS_AXP2101_STATUS1));
+  if (autoSleep.updateSupply(source, now)) autoPowerOffBlocked = false;
+  if (source != AutoSleep::Supply::Battery) return "battery_power_required";
+  if (automatic && !autoSleep.due(now)) return "idle_timeout_reset";
+  pendingPowerOff = automatic ? PowerOffReason::AutomaticTimeout : PowerOffReason::ManualSleep;
+  return nullptr;
+}
+void executePmicPowerOff() {
+  if (pendingPowerOff == PowerOffReason::None || !shutdownInputsIdle()) return;
+  if (pendingPowerOff == PowerOffReason::AutomaticTimeout && !autoSleep.due(millis())) {
+    pendingPowerOff = PowerOffReason::None;
+    return;
+  }
+  pendingPowerOff = PowerOffReason::None;
+  Serial.flush(); // Complete the request acknowledgement before the final source check.
+  const bool shutdownIssued = PmicPowerOff::shutdownOnBattery(
+      power, pmuOk, pmicPowerOffReady, XPOWERS_AXP2101_STATUS1, [&] {
+        // The preceding STATUS1 read gates every peripheral change; abort leaves them untouched.
+        animation.cancel(brightness);
+        if (displayOk) {
+          gfx.setBrightness(0);
+          gfx.displayOff();
+        }
+        if (touchOk) {
+          detachInterrupt(digitalPinToInterrupt(TP_INT));
+          touch.sleep();
+        }
+        gravity.enable(false);
+      });
+  if (!shutdownIssued) {
+    autoPowerOffBlocked = true;
+    return;
+  }
+  for (;;) delay(1000); // Never resume application work after the PMIC shutdown command.
+}
+void pollAutoSleep() {
+  const uint32_t now = millis();
+  static uint32_t lastSupplyPoll = 0;
+  static bool supplyPolled = false;
+  if (!supplyPolled || now - lastSupplyPoll >= 250) {
+    supplyPolled = true;
+    lastSupplyPoll = now;
+    // STATUS1 bit 5 is VBUS-good, independent of charging or USB host presence.
+    const int status = pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1;
+    const auto source = AutoSleep::decodeSupply(status);
+    if (autoSleep.updateSupply(source, now)) autoPowerOffBlocked = false;
+    updateMenuBattery(status);
+  }
+  if (sleeping && autoSleep.supply == AutoSleep::Supply::Battery) {
+    if (pendingPowerOff == PowerOffReason::None && !autoPowerOffBlocked) {
+      if (requestPmicPowerOff(false)) autoPowerOffBlocked = true;
+      else pendingPowerOff = PowerOffReason::ScreenOffBattery;
+    }
+    return;
+  }
+  if (pendingPowerOff != PowerOffReason::None) return;
+  if (sleeping || fingerDown || suppressTouch || touchInterrupt || commandLength || commandInvalid ||
+      Serial.available() || pmicPowerKeyActive || digitalRead(kBootPin) == LOW) {
+    autoPowerOffBlocked = false;
+    return;
+  }
+  AutoSleep::TimeoutAction action = autoSleep.timeoutAction(now);
+  if (action == AutoSleep::TimeoutAction::None) {
+    autoPowerOffBlocked = false;
+    return;
+  }
+  // Refresh supply at the timeout boundary so a newly attached USB source
+  // cannot be treated as a battery timeout (or vice versa).
+  const auto supply = AutoSleep::decodeSupply(pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1);
+  if (autoSleep.updateSupply(supply, millis())) {
+    autoPowerOffBlocked = false;
+    return;
+  }
+  action = autoSleep.timeoutAction(millis());
+  if (action == AutoSleep::TimeoutAction::None) return;
+  if (action == AutoSleep::TimeoutAction::ScreenOff) {
+    setSleeping(true);
+    return;
+  }
+  if (autoPowerOffBlocked || !pmicPowerOffReady) {
+    autoPowerOffBlocked = true;
+    return;
+  }
+  if (requestPmicPowerOff(true)) autoPowerOffBlocked = true;
 }
 
 const char *setMenu(bool open) {
@@ -561,6 +711,8 @@ const char *setSlideshow(bool enabled, uint16_t interval) {
   return nullptr;
 }
 
+
+
 const char *setAutoSleep(uint32_t usbSeconds, uint32_t batterySeconds) {
   if (!AutoSleep::validTimeout(usbSeconds) || !AutoSleep::validTimeout(batterySeconds)) return "invalid_autosleep_arguments";
   if (!preferencesOk) return "preferences_unavailable";
@@ -577,22 +729,6 @@ const char *setAutoSleep(uint32_t usbSeconds, uint32_t batterySeconds) {
   return nullptr;
 }
 
-void pollAutoSleep() {
-  const uint32_t now = millis();
-  static uint32_t lastSupplyPoll = 0;
-  static bool supplyPolled = false;
-  if (!supplyPolled || now - lastSupplyPoll >= 250) {
-    supplyPolled = true;
-    lastSupplyPoll = now;
-    // STATUS1 bit 5 is VBUS-good, independent of charging or USB host presence.
-    const int status = pmuOk ? power.readRegister(XPOWERS_AXP2101_STATUS1) : -1;
-    const auto source = status < 0 ? AutoSleep::Supply::Unknown
-                      : (status & 0x20) ? AutoSleep::Supply::Usb : AutoSleep::Supply::Battery;
-    autoSleep.updateSupply(source, now);
-    updateMenuBattery(status);
-  }
-  if (!sleeping && !fingerDown && autoSleep.due(now)) setSleeping(true);
-}
 
 const char *setBrightness(uint8_t value) {
   if (!displayOk) return "display_unavailable";
@@ -612,6 +748,7 @@ const char *setBrightness(uint8_t value) {
 }
 
 const char *setAnimation(uint8_t transition, uint8_t motion, uint16_t period) {
+  if (transition >= 4) return "invalid_animation";
   if (!displayOk) return "display_unavailable";
   if (!animationOk) return "psram_unavailable";
   if (!preferencesOk) return "preferences_unavailable";
@@ -656,7 +793,7 @@ const char *menuAction(const char *action) {
     drawMenu();
     return nullptr;
   }
-  if (strcmp(action, "transition_next") == 0) return setAnimation((animation.transition + 1) % 3, animation.motion, animation.rotationPeriod);
+  if (strcmp(action, "transition_next") == 0) return setAnimation((animation.transition + 1) % 4, animation.motion, animation.rotationPeriod);
   if (strcmp(action, "motion_next") == 0) {
     uint8_t next = (animation.motion + 1) % 4;
     if (next == 3 && !gravity.ok) next = 0;
@@ -891,6 +1028,9 @@ void status() {
                 static_cast<unsigned long>(autoSleep.usbSeconds), static_cast<unsigned long>(autoSleep.batterySeconds),
                 static_cast<unsigned long>(autoSleep.timeoutSeconds()),
                 static_cast<unsigned long>(sleeping ? 0 : (autoSleep.remainingMs(millis()) + 999U) / 1000U));
+  Serial.printf("\"pmic_poweroff_ready\":%s,\"pmic_on_hold_ms\":%u,",
+                pmicPowerOffReady ? "true" : "false",
+                pmicPowerOffReady ? PmicPowerOff::kPowerOnHoldMilliseconds : 0);
   Serial.printf("\"battery_charging\":%s,", batteryCharging);
   Serial.printf("\"shuffle_enabled\":%s,\"previous_available\":%s,",
                 player.shuffle() ? "true" : "false", player.previousAvailable() ? "true" : "false");
@@ -989,7 +1129,7 @@ void dispatch(char *line) {
     reply(setSlideshow(n != 0, interval));
   } else if (count == 4 && strcmp(tokens[0], "ANIMATION") == 0) {
     uint32_t motion = 0, period = 0;
-    if (!unsignedArgument(tokens[1], 2, n) || !unsignedArgument(tokens[2], 3, motion) ||
+    if (!unsignedArgument(tokens[1], 3, n) || !unsignedArgument(tokens[2], 3, motion) ||
         !unsignedArgument(tokens[3], 120, period) || period < 8) return reply("invalid_animation_arguments");
     reply(setAnimation(n, motion, period));
   } else if (count == 3 && strcmp(tokens[0], "AUTOSLEEP") == 0) {
@@ -1079,7 +1219,15 @@ void applyGesture(GestureAction action, int capturedButton = -1) {
 
 void pollControls() {
   const uint32_t now = millis();
-  if (touchOk && touchInterrupt) {
+  static uint32_t lastSleepTouchPoll = 0;
+  if (touchOk) AutoSleep::pollTouchRelease(
+      sleeping || pendingPowerOff != PowerOffReason::None, suppressTouch, now, lastSleepTouchPoll, [] {
+    noInterrupts();
+    touchInterrupt = false;
+    interrupts();
+    return touch.confirmedRelease();
+  });
+  if (touchOk && touchInterrupt && !(sleeping && suppressTouch)) {
     noInterrupts();
     touchInterrupt = false;
     interrupts();
@@ -1111,13 +1259,12 @@ void pollControls() {
     }
   }
   if (fingerDown) applyGesture(gesture.hold(now));
-  // CST92xx IRQ reports can be one second apart; recover a genuinely lost
-  // contact only after more than two report intervals.
   if (fingerDown && now - fingerLastEvent > 2500) {
     fingerDown = false;
     gesture.cancel();
   }
-  if (suppressTouch && now - touchSuppressedAt > 2500) suppressTouch = false;
+  if (suppressTouch && !sleeping && pendingPowerOff == PowerOffReason::None &&
+      now - touchSuppressedAt > 2500) suppressTouch = false;
 
   static bool bootRaw = digitalRead(kBootPin) == LOW;
   static bool bootStable = bootRaw;
@@ -1142,7 +1289,11 @@ void pollControls() {
     lastPowerPoll = now;
     power.getIrqStatus();
     const bool shortPress = power.isPekeyShortPressIrq();
+    const bool keyPressEdge = power.isPekeyNegativeIrq();
+    const bool keyReleaseEdge = power.isPekeyPositiveIrq();
     power.clearIrqStatus();
+    if (keyPressEdge && !keyReleaseEdge) pmicPowerKeyActive = true;
+    if (keyReleaseEdge) pmicPowerKeyActive = false;
     if (shortPress) setSleeping(!sleeping);
   }
 }
@@ -1196,7 +1347,7 @@ void setup() {
     }
     const uint32_t savedAnimation = preferences.getUInt("animation", 1U | (2U << 2) | (24U << 4));
     const uint32_t period = savedAnimation >> 4;
-    if ((savedAnimation & 3U) < 3U && period >= 8U && period <= 120U) {
+    if ((savedAnimation & 3U) < 4U && period >= 8U && period <= 120U) {
       animation.transition = savedAnimation & 3U;
       animation.motion = (savedAnimation >> 2) & 3U;
       animation.rotationPeriod = period;
@@ -1214,10 +1365,15 @@ void setup() {
   gravity.begin();
   pmuOk = power.begin(Wire, AXP2101_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
   if (pmuOk) {
+    pmicPowerOffReady = PmicPowerOff::configureOnLevel(
+        power, XPOWERS_AXP2101_IRQ_OFF_ON_LEVEL_CTRL, XPOWERS_POWERON_2S);
     // Keep factory rail/charging settings; only enable measurement and key IRQ.
     power.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
     power.clearIrqStatus();
-    power.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ);
+    pmicPowerOffReady = power.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ |
+                                        XPOWERS_AXP2101_PKEY_POSITIVE_IRQ |
+                                        XPOWERS_AXP2101_PKEY_NEGATIVE_IRQ) &&
+                        pmicPowerOffReady;
     power.enableBattDetection();
     power.enableBattVoltageMeasure();
   }
@@ -1233,11 +1389,7 @@ void setup() {
   touchOk = touchOk && touch.getSupportTouchPoint() > 0 && touch.getSupportTouchPoint() <= 5;
   if (touchOk) {
     // begin() reads attributes in command mode; reset returns to touch reports.
-    touch.reset();
-    delay(50);
-    touch.setMaxCoordinates(LCD_WIDTH, LCD_HEIGHT);
-    touch.setMirrorXY(true, true);
-    attachInterrupt(digitalPinToInterrupt(TP_INT), onTouch, FALLING);
+    resetTouchReports();
   }
   displayOk = gfx.begin(40000000);
   if (displayOk) { gfx.setBrightness(brightness); enablePanelSync(); delay(50); }
@@ -1260,8 +1412,11 @@ void setup() {
 
 void loop() {
   pollSerial();
+  executePmicPowerOff();
   pollControls();
+  executePmicPowerOff();
   pollAutoSleep();
+  executePmicPowerOff();
   pollSlideshow();
   refreshGravity();
   animation.poll(!sleeping && !menuOpen && current >= 0 && !commandLength && !fingerDown, brightness);

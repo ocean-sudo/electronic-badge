@@ -2,7 +2,7 @@
 
 Firmware and a pure HTTPS Web Serial controller for the Waveshare ESP32-S3-Touch-AMOLED-1.75C. Supported desktop browsers talk directly to the USB serial port; no PWA, Python serial bridge, native helper, or cloud image service is required. The production Pages site is hosted by [electronic-badge-project/electronic-badge](https://github.com/electronic-badge-project/electronic-badge); reviewed content is manually synced from this source repository's `docs/` directory and is not automatically deployed by commits here.
 
-The device's screen-off setting only turns off the display. It does not mean ESP32 deep sleep, power-off, or guaranteed reduction of total device power use.
+Sleep behavior depends on the power source. On USB/VBUS (including a charger), or when the source is unknown, the display and IMU turn off while USB control stays online. On battery, both a manual SLEEP request and unplugging USB while the display is off request AXP2101 PMIC software shutdown after active work and inputs are idle and PMIC readiness is confirmed; neither enters ESP32 deep sleep nor relies on GPIO3 EXT0 wake. PMIC shutdown disconnects USB; hold POWER for about 2 seconds to cold-start the device, and touch cannot wake it while off. Battery idle timeout retains its existing PMIC-shutdown behavior and defaults to 0 (disabled). USB/unknown screen-off remains online. Power consumption has not been measured.
 
 > The console screenshots show the real web UI with original synthetic artwork, offline and not connected to a device.
 
@@ -14,8 +14,8 @@ The device's screen-off setting only turns off the display. It does not mean ESP
 
 - Select, drop, or paste JPG, PNG, or WebP, adjust a circular crop, and preview before explicitly uploading. The browser outputs 466×466 JPEG using Canvas `toBlob` quality parameter 0.85; file size varies by image. WebP is decoded in the browser and converted to JPEG. Firmware uses the ESP32-S3 ROM software TJpgDec JPEG decoder and does not decode WebP.
 - Browse, replace, delete, display, and read back saved JPEGs; adjust brightness, animation, device menus, slideshow, and screen-off settings. Image transitions include direct, fade, slide, and a low-cost radial ripple whose edge is less soft than a blended transition. Stable image IDs are 0–2147483646; capacity depends on LittleFS space.
-- Firmware-managed slideshow continues without the computer service. Shuffle is opt-in. Playback history retains at most six entries in RAM and resets on reboot.
-- Separate USB/battery idle screen-off settings and PMU-reported charging status. USB connection alone does not imply charging.
+- Firmware-managed slideshow continues after the page closes or USB disconnects. Shuffle is opt-in. Playback history retains at most six entries in RAM and resets after any device restart, including PMIC shutdown; a PMIC cold start does not preserve the slideshow's temporary current image. Saved settings remain, and the shuffle round restarts.
+- USB idle timeout turns the screen off while USB control stays online; battery idle timeout and manual battery SLEEP both request AXP2101 PMIC software shutdown rather than ESP32 deep sleep. Unplugging USB while screen-off also requests PMIC shutdown when the source changes to battery. Timeouts are separate, 0 disables the action, and defaults remain USB 15 seconds / battery 0. POWER hold is configured to 2 seconds; the web UI and device menu show PMU-reported charging status, and USB connection alone does not imply charging.
 - Image storage and transfer are CRC checked; failed uploads do not replace the prior image.
 
 ## Use the HTTPS Web Serial controller

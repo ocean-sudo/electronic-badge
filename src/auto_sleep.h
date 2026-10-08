@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+
 struct AutoSleep {
   enum class Supply { Unknown, Usb, Battery };
   uint32_t usbSeconds = 15;
@@ -13,6 +14,19 @@ struct AutoSleep {
     return seconds == 0 || (seconds >= 5 && seconds <= 86400);
   }
 
+  static Supply decodeSupply(int status) {
+    return status < 0 ? Supply::Unknown : (status & 0x20) ? Supply::Usb : Supply::Battery;
+  }
+
+
+  // Poll only an outstanding sleep-entry contact; elapsed time never releases it.
+  template <typename ReadReleased>
+  static void pollTouchRelease(bool sleeping, bool &suppressed, uint32_t now,
+                               uint32_t &lastPoll, ReadReleased readReleased) {
+    if (!sleeping || !suppressed || now - lastPoll < 50U) return;
+    lastPoll = now;
+    if (readReleased()) suppressed = false;
+  }
   void activity(uint32_t now) { lastActivity = now; }
 
   bool updateSupply(Supply value, uint32_t now) {
@@ -36,4 +50,15 @@ struct AutoSleep {
   bool due(uint32_t now) const {
     return timeoutSeconds() != 0 && remainingMs(now) == 0;
   }
+
+  enum class TimeoutAction { None, ScreenOff, PmicPowerOff };
+
+  TimeoutAction sleepAction() const {
+    return supply == Supply::Battery ? TimeoutAction::PmicPowerOff : TimeoutAction::ScreenOff;
+  }
+
+  TimeoutAction timeoutAction(uint32_t now) const {
+    return due(now) ? sleepAction() : TimeoutAction::None;
+  }
 };
+

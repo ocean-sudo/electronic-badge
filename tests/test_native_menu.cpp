@@ -38,6 +38,7 @@ void layout() {
       for (unsigned state = 0; state < states; ++state) {
         const char *label = menuButtonLabel(button, automatic && state, shuffle && state,
                                            cut ? state : 0, motion ? state : 0);
+        if (!std::strcmp(button.action, "sleep")) assert(!std::strcmp(label, "SLEEP/OFF"));
         assert(std::strlen(label) * 12 + 16 <= static_cast<unsigned>(button.width));
         const int y = button.y + (button.height - 16) / 2;
         assert(y >= button.y + 8 && y + 16 <= button.y + button.height - 8);
@@ -59,7 +60,7 @@ void layout() {
   std::cout << "native complete-cell/rectangle max radius " << maximumRadius << " < 233\n";
 }
 void matrix() {
-  const char *all[] = {"main", "back", "sleep", "playback", "display", "timeout", "slideshow",
+  const char *all[] = {"main", "back", "sleep", "power_off", "playback", "display", "timeout", "slideshow",
       "shuffle", "interval_down", "interval_up", "previous", "next", "brightness_down",
       "brightness_up", "animation", "usb_sleep_down", "usb_sleep_up", "battery_sleep_down",
       "battery_sleep_up", "transition_next", "motion_next", "rotation_faster", "rotation_slower"};
