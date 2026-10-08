@@ -81,6 +81,13 @@ void matrix() {
     assert(!menuActionAllowed(pages[p], "obsolete_action", true));
   }
 }
+void transitionLabels() {
+  const char *expected[] = {"CUT: DIRECT", "CUT: FADE", "CUT: SLIDE", "CUT: RIPPLE"};
+  for (unsigned transition = 0; transition < 4; ++transition) {
+    assert(std::strcmp(menuButtonLabel(kAnimationButtons[0], false, false, transition, 0),
+                       expected[transition]) == 0);
+  }
+}
 void battery() {
   for (int unrelated = 0; unrelated < 256; ++unrelated) {
     const int state = (unrelated >> 5) & 3;
