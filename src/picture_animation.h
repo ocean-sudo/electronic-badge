@@ -4,6 +4,7 @@
 #include <esp_heap_caps.h>
 #include "display/Arduino_CO5300.h"
 #include "animation_renderer.h"
+#include "picture_output_front.h"
 #include "rotation_clock.h"
 #include "badge_qspi.h"
 
@@ -290,10 +291,13 @@ class PictureAnimation {
       phaseUs = micros() - falling;
       if (phaseUs + expected + 1000U >= period * 2U) { error = "display_sync_late"; return false; }
     }
-    const uint32_t sending = micros();
-    display_.draw16bitRGBBitmap(0, 0, outputs_[front_ ^ 1U], 466, 466);
-    transferUs = micros() - sending;
-    if (!bus_.pixelOk) { error = "display_transfer"; return false; }
+    const bool transferred = presentOutputBuffer(front_, [&](unsigned output) {
+      const uint32_t sending = micros();
+      display_.draw16bitRGBBitmap(0, 0, outputs_[output], 466, 466);
+      transferUs = micros() - sending;
+      return bus_.pixelOk;
+    });
+    if (!transferred) { error = "display_transfer"; return false; }
     presentedGravityAngle_ = gravityAngle_;
     if (motion == 2) {
       rotationClock_.recordPresented(renderedRotationAngle_);

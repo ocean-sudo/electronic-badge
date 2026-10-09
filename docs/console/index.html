@@ -14,6 +14,9 @@
 .filebox.is-dragover{border-color:var(--accent);background:#e0eaff;outline:2px solid #79a8ff;outline-offset:2px}.filebox .hint{display:block;margin-top:10px}
 header{flex-wrap:wrap}.header-status{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;max-width:100%}.battery-pill{white-space:normal;line-height:1.5;font-variant-numeric:tabular-nums;max-width:100%}.battery-pill.charging{background:#e0f3eb;color:#12664b}.serial-notice{margin:0 0 20px;padding:14px 16px;border:1px solid #c8d8f2;border-radius:12px;background:#f4f8ff;color:#405b82;font-size:13px;line-height:1.65}.serial-notice strong{color:#243f68}.serial-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}@media(max-width:780px){header{gap:12px}.header-status{width:100%;justify-content:flex-start}}@media(max-width:600px){.catalog-heading{flex-wrap:wrap;align-items:flex-start}.catalog-heading #slotCount{flex:1 1 100%;text-align:left;overflow-wrap:anywhere}}
 </style>
+<script type="importmap">
+{"imports":{"esptool-js":"https://unpkg.com/esptool-js@0.7.0/bundle.js"}}
+</script>
 </head>
 <body>
 <main>
@@ -127,6 +130,19 @@ header{flex-wrap:wrap}.header-status{display:flex;align-items:center;justify-con
 <button data-menu-action="back" data-new disabled>返回上一级</button>
 </div>
 <p class="hint" style="margin-top:12px">图片界面左滑下一张、右滑上一张、上滑打开菜单；运行时短按 BOOT 也可打开或关闭菜单。主菜单分为 PLAYBACK（自动切图、随机、间隔及历史切图）、DISPLAY（亮度与 ANIMATION 动画页）、TIMEOUT（插电闲置熄屏 / 电池闲置 PMIC 关机，0 为关闭）。菜单内 SLEEP 在电池供电时请求 PMIC 关机，在 USB 或电源未知时只熄屏并保持在线；设备等待触控、按键、BOOT 和串口命令释放，并确认 PMIC 已就绪后再关机，条件不满足时不会切断电源。各页顶部显示电池百分比与实际充电状态，不把 USB 连接当作充电。BACK 返回上一级（动画 → 显示 → 主菜单），主菜单 BACK 返回图片；任意菜单页下滑或点击上方「关闭设备菜单」直接关闭整个菜单。在屏幕左侧中部边缘起手向右滑也可返回上一级，按钮上起手不会触发边缘返回。这里回读固件实际菜单帧，不是网页模拟或光学屏幕回读；成功上传新图会退出菜单。</p>
+</section>
+<section class="card" id="firmwareUpdate">
+<h2>固件更新 · 仅写 APP 分区</h2>
+<p class="hint">这是通过 ROM 下载器手动刷写，不是 OTA：覆盖设备唯一的 factory APP，没有备用槽或自动回滚。断电、USB 断开或刷写中断可能留下不完整且无法启动的 APP，可能必须重新进入 ROM 下载模式刷写才能恢复。不会整片擦除，也不会写入 bootloader、分区表、NVS 或图片文件系统。</p>
+<label class="filebox" for="firmwareFile">选择本机从已审查仓库源码构建的 firmware.bin<input id="firmwareFile" type="file" accept=".bin,application/octet-stream"><span class="hint">选择项目根目录 .pio/build/picture-badge/firmware.bin；不自动上传，也不代表已验证发布来源。</span></label>
+<p class="hint">开始刷写时才会联网从 <code>unpkg.com</code> 加载固定版本 <code>esptool-js 0.7.0</code> JavaScript 模块；该远端代码会在此页面执行。请仅在信任本页面及其外部依赖时授权串口。模块用于浏览器内串口刷写；本流程不会把固件或照片上传到 unpkg。</p>
+<p id="firmwareInfo" class="statusline" role="status">尚未选择固件。</p>
+<label class="hint"><input id="romModeConfirmed" type="checkbox"> 我已按说明手动进入 ESP32-S3 ROM 下载模式。</label>
+<label class="hint"><input id="flashOverwriteConfirmed" type="checkbox"> 我确认覆盖现有 APP 固件，仅写入本页显示的固定应用分区。</label>
+<p class="hint">刷写前：按住 BOOT，按下并释放 RESET/EN，再松开 BOOT；确认设备在 ROM 下载模式后再继续。此工具不尝试自动拉 BOOT 或复位，不要依赖原生 USB 自动切换。</p>
+<div class="row"><button id="flashFirmware" class="danger" disabled>仅写入 APP 固件</button><button id="flashReconnect" hidden>已松开 BOOT 并按 RESET：重新连接并读取 STATUS</button></div>
+<p class="hint"><strong>重要：此设备只有一个 factory APP 分区，没有备用 OTA 分区或自动回滚。刷写会覆盖唯一可启动应用；断电、断连、错误或不兼容镜像都可能使设备无法启动，需要重新用有线 ROM 下载流程恢复。请勿在生产/重要数据设备上尝试未知镜像。</strong></p>
+<p id="firmwareStatus" class="statusline" role="status" aria-live="polite">刷写会覆盖现有 APP 固件。升级前备份重要数据；启用 Secure Boot、Flash Encryption 或禁用 ROM 下载模式的设备可能无法使用此通用流程。</p>
 </section>
 </div>
 </div>
@@ -380,6 +396,145 @@ class BadgeSerial {
 
 const badgeSerial = new BadgeSerial();
 const serialSupported = 'serial' in navigator && typeof navigator.serial.requestPort === 'function';
+let lastSerialPort = null, firmwareBytes = null, pendingFirmwarePort = null;
+let esptoolModulePromise = null;
+let firmwareModulePromise = null;
+function loadFirmwareModule() {
+  firmwareModulePromise ||= import('./firmware_update.mjs');
+  return firmwareModulePromise;
+}
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+function updateFirmwareControls() {
+  const supported = serialSupported && !!navigator.serial?.requestPort;
+  $('firmwareFile').disabled = busy;
+  $('romModeConfirmed').disabled = busy;
+  $('flashOverwriteConfirmed').disabled = busy;
+  $('flashFirmware').disabled = busy || !supported || !firmwareBytes || !$('romModeConfirmed').checked || !$('flashOverwriteConfirmed').checked;
+  $('flashReconnect').disabled = busy || !pendingFirmwarePort;
+}
+async function selectFirmware() {
+  firmwareBytes = null;
+  $('firmwareInfo').textContent = '正在校验固件…';
+  updateFirmwareControls();
+  const file = $('firmwareFile').files?.[0];
+  if (!file) { $('firmwareInfo').textContent = '尚未选择固件。'; updateFirmwareControls(); return; }
+  $('firmwareInfo').classList.remove('error');
+  try {
+    if (file.name !== 'firmware.bin') throw new Error('文件名必须为 firmware.bin。');
+    const {validateFirmwareFileSize, readFirmwareFile} = await loadFirmwareModule();
+    validateFirmwareFileSize(file.size);
+    const bytes = await readFirmwareFile(file);
+    const hash = await sha256Hex(bytes);
+    firmwareBytes = bytes;
+    $('firmwareInfo').textContent = file.name + ' · ' + (bytes.byteLength / 1048576).toFixed(2) + ' MiB · SHA-256 ' + hash;
+  } catch (error) {
+    $('firmwareInfo').textContent = error.message;
+    $('firmwareInfo').classList.add('error');
+  }
+  updateFirmwareControls();
+}
+function firmwareLog(text) {
+  const status = $('firmwareStatus');
+  status.textContent = (status.textContent + String.fromCharCode(10) + String(text).trim()).slice(-4000);
+}
+async function flashFirmware() {
+  if (busy || !firmwareBytes || !$('romModeConfirmed').checked || !$('flashOverwriteConfirmed').checked) return;
+  const bytes = firmwareBytes;
+  busy = true;
+  updateControls(); updateFirmwareControls();
+  let port = badgeSerial.port || lastSerialPort;
+  let transport = null;
+  try {
+    if (!port) {
+      port = await navigator.serial.requestPort();
+      lastSerialPort = port;
+    }
+    await badgeSerial.tail.catch(() => {});
+    await badgeSerial.close();
+    connected = false;
+    markDisconnected('已释放控制台串口，准备访问 ROM 下载器。');
+    $('flashReconnect').hidden = true;
+    $('firmwareStatus').classList.remove('error');
+    $('firmwareStatus').textContent = '串口已释放。正在加载固定版本 esptool-js 并连接 ROM 下载器…';
+    esptoolModulePromise ||= import('esptool-js');
+    const module = await esptoolModulePromise;
+    transport = new module.Transport(port, true);
+    const loader = new module.ESPLoader({
+      transport: transport,
+      baudrate: 115200,
+      terminal: {clean:function(){}, writeLine:firmwareLog, write:firmwareLog},
+      debugLogging: false
+    });
+    const chip = await loader.main('no_reset');
+    if (!/ESP32-S3/i.test(String(chip))) throw new Error('检测到 ' + (chip || '未知芯片') + '；只允许 ESP32-S3，已停止。');
+    firmwareLog('已连接 ' + chip + ' ROM 下载器。写入固定地址 0x10000。');
+    const {appOnlyFlashOptions} = await loadFirmwareModule();
+    const progress = function(_index, written, total) {
+      $('firmwareStatus').textContent = 'APP 分区刷写中：' + Math.floor(written * 100 / total) + '% · ' + written + ' / ' + total + ' bytes';
+    };
+    await loader.writeFlash(appOnlyFlashOptions(bytes, progress));
+    await loader.after('no_reset');
+    pendingFirmwarePort = port;
+    $('romModeConfirmed').checked = false;
+    $('flashOverwriteConfirmed').checked = false;
+    $('flashReconnect').hidden = false;
+    $('firmwareStatus').textContent = 'APP 写入完成；串口已关闭。松开 BOOT，按 RESET/EN 启动应用，再点击“重新连接并读取 STATUS”。';
+    message('APP 固件写入完成。请手动按 RESET/EN，再重新连接检查设备状态。', 'success');
+  } catch (error) {
+    $('firmwareStatus').classList.add('error');
+    $('firmwareStatus').textContent = '刷写未完成：' + error.message + String.fromCharCode(10) + '应用可能不完整；设备可能仍在 ROM 下载模式。确认固件来源后，再手动进入 ROM 模式重试。';
+    $('romModeConfirmed').checked = false;
+    $('flashOverwriteConfirmed').checked = false;
+    markDisconnected('固件刷写失败或未完成。');
+    message(error.message, 'error');
+  } finally {
+    try { if (transport) await transport.disconnect(); } catch (_) {}
+    try { await port?.close(); } catch (_) {}
+    busy = false;
+    updateControls(); updateFirmwareControls();
+  }
+}
+async function reconnectAfterFirmwareFlash() {
+  if (busy || !pendingFirmwarePort) return;
+  busy = true; updateControls(); updateFirmwareControls();
+  const port = pendingFirmwarePort;
+  try {
+    const deadline = performance.now() + 10000;
+    let lastError = null;
+    while (performance.now() < deadline) {
+      const ports = await navigator.serial.getPorts();
+      const candidate = ports.find(function(item){ return item === port; }) || (ports.length === 1 ? ports[0] : null);
+      if (candidate) {
+        try {
+          await badgeSerial.connect(candidate);
+          await refreshStatus(false);
+          pendingFirmwarePort = null;
+          lastSerialPort = candidate;
+          $('flashReconnect').hidden = true;
+          $('firmwareStatus').textContent = '应用已重新连接并响应 STATUS：' + (state?.firmware || '固件版本未知') + '。';
+          message('刷写后 STATUS 校验通过：' + (state?.firmware || '固件版本未知') + '。', 'success');
+          return;
+        } catch (error) {
+          lastError = error;
+          await badgeSerial.close();
+        }
+      }
+      await new Promise(function(resolve){ setTimeout(resolve, 500); });
+    }
+    throw lastError || new Error('浏览器尚未重新发现应用串口。');
+  } catch (error) {
+    await badgeSerial.close();
+    markDisconnected('刷写后尚未重新连接；请确认已按 RESET/EN 并手动连接。');
+    $('firmwareStatus').classList.add('error');
+    $('firmwareStatus').textContent = '刷写已完成，但 STATUS 重新连接失败：' + error.message + '。请点击“连接徽章”重试。';
+    message(error.message, 'error');
+  } finally {
+    busy = false; updateControls(); updateFirmwareControls();
+  }
+}
 function markDisconnected(detail='设备未连接。') {
   connected=false;
   state=null;
@@ -591,6 +746,7 @@ function updateControls() {
   else if (!occupied(selected)) $('selectedInfo').textContent = '所选 ID 当前为空；上传到自动分配可使用最小空 ID。';
   else $('selectedInfo').textContent = (state.current === selected ? '正在显示' : '已保存') + (savedSlot === selected ? ' · CRC ' + savedCRC.toString(16).padStart(8,'0') : ' · 尚未读取预览');
   renderGallerySelection();
+  updateFirmwareControls();
 }
 function renderState(next) {
   const previous = state;
@@ -1073,6 +1229,7 @@ async function connectBadge() {
   try {
     const granted=await navigator.serial.getPorts();
     const port=granted.length===1 ? granted[0] : await navigator.serial.requestPort();
+    lastSerialPort = port;
     await badgeSerial.connect(port);
     await refreshStatus(false);
     if (menuVisible()) await readMenu();
@@ -1086,6 +1243,11 @@ async function connectBadge() {
   }
 }
 $('connect').addEventListener('click',connectBadge);
+$('firmwareFile').addEventListener('change',selectFirmware);
+$('romModeConfirmed').addEventListener('change',updateFirmwareControls);
+$('flashOverwriteConfirmed').addEventListener('change',updateFirmwareControls);
+$('flashFirmware').addEventListener('click',flashFirmware);
+$('flashReconnect').addEventListener('click',reconnectAfterFirmwareFlash);
 $('disconnect').addEventListener('click',async()=>{
   if (busy) return;
   busy=true; updateControls();
