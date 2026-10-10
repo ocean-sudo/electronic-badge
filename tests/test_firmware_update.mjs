@@ -89,3 +89,89 @@ test('builds an APP-only, non-erasing write request', () => {
   assert.equal(options.eraseAll, false);
   assert.equal(options.reportProgress, reportProgress);
 });
+
+import { webcrypto } from 'node:crypto';
+import {
+  LATEST_FIRMWARE_RELEASE_API,
+  fetchLatestFirmware,
+  parseFirmwareChecksum
+} from '../docs/console/firmware_update.mjs';
+
+if (!globalThis.crypto?.subtle) globalThis.crypto = webcrypto;
+
+test('parses only one SHA256SUMS entry for firmware.bin', () => {
+  const hash = 'a'.repeat(64);
+  assert.equal(parseFirmwareChecksum(hash + '  firmware.bin\n'), hash);
+  assert.equal(parseFirmwareChecksum(hash.toUpperCase() + ' *firmware.bin'), hash);
+  assert.throws(() => parseFirmwareChecksum(hash + '  firmware.bin\n' + hash + '  other.bin'), /格式/);
+  assert.throws(() => parseFirmwareChecksum(hash + '  other.bin'), /格式/);
+  assert.throws(() => parseFirmwareChecksum('bad  firmware.bin'), /格式/);
+});
+
+function releaseFixture(bytes, checksum) {
+  return {
+    tag_name: 'v2.0.0',
+    draft: false,
+    prerelease: false,
+    assets: [
+      { name: 'firmware.bin', size: bytes.byteLength, browser_download_url: 'https://untrusted.invalid/firmware.bin' },
+      { name: 'SHA256SUMS', size: checksum.length, browser_download_url: 'https://untrusted.invalid/SHA256SUMS' },
+      { name: 'BUILD-INFO.txt', size: 10, browser_download_url: 'https://untrusted.invalid/BUILD-INFO.txt' }
+    ]
+  };
+}
+
+async function sha256(bytes) {
+  const digest = await webcrypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function response(body) {
+  return { ok: true, async json() { return body; } };
+}
+
+test('downloads only fixed repository URLs and verifies release bytes before image validation', async () => {
+  const bytes = validImage();
+  const checksum = await sha256(bytes);
+  const urls = [];
+  const fetchStub = async url => {
+    urls.push(url);
+    if (url === LATEST_FIRMWARE_RELEASE_API) return response(releaseFixture(bytes, checksum + '  firmware.bin\n'));
+    if (url.endsWith('/firmware.bin')) return { ok: true, async arrayBuffer() { return bytes.buffer; } };
+    if (url.endsWith('/SHA256SUMS')) return { ok: true, async text() { return checksum + '  firmware.bin\n'; } };
+    throw new Error('unexpected URL');
+  };
+  const result = await fetchLatestFirmware(fetchStub);
+  assert.equal(result.tag, 'v2.0.0');
+  assert.equal(result.sha256, checksum);
+  assert.deepEqual(result.bytes, bytes);
+  assert.equal(urls[0], LATEST_FIRMWARE_RELEASE_API);
+  assert(urls.every(url => url.startsWith('https://api.github.com/repos/ocean-sudo/electronic-badge/') || url.startsWith('https://github.com/ocean-sudo/electronic-badge/releases/download/v2.0.0/')));
+  assert.equal(urls.some(url => url.includes('untrusted.invalid')), false);
+});
+
+test('rejects changed bytes, non-stable tags, and oversized release assets', async () => {
+  const bytes = validImage();
+  const checksum = await sha256(bytes);
+  const tagStub = async url => url === LATEST_FIRMWARE_RELEASE_API ? response({ ...releaseFixture(bytes, checksum + '  firmware.bin\n'), tag_name: 'v2.0.0-rc1' }) : assert.fail('download must not start');
+  await assert.rejects(fetchLatestFirmware(tagStub), /稳定/);
+
+  const mismatchStub = async url => {
+    if (url === LATEST_FIRMWARE_RELEASE_API) return response(releaseFixture(bytes, checksum + '  firmware.bin\n'));
+    if (url.endsWith('/firmware.bin')) return { ok: true, async arrayBuffer() { const changed = bytes.slice(); changed[33] ^= 1; return changed.buffer; } };
+    if (url.endsWith('/SHA256SUMS')) return { ok: true, async text() { return checksum + '  firmware.bin\n'; } };
+    throw new Error('unexpected URL');
+  };
+  await assert.rejects(fetchLatestFirmware(mismatchStub), /SHA256SUMS 不匹配/);
+
+  const oversizedStub = async url => url === LATEST_FIRMWARE_RELEASE_API ? response({
+    ...releaseFixture(bytes, checksum + '  firmware.bin\n'),
+    assets: releaseFixture(bytes, checksum + '  firmware.bin\n').assets.map(asset => asset.name === 'firmware.bin' ? { ...asset, size: APP_FLASH_MAX_BYTES + 1 } : asset)
+  }) : assert.fail('oversized image must be rejected before download');
+  await assert.rejects(fetchLatestFirmware(oversizedStub), /APP 分区/);
+});
+
+test('reports latest-release HTTP and network/CORS failures', async () => {
+  await assert.rejects(fetchLatestFirmware(async () => { throw new TypeError('cross-origin request blocked'); }), /网络或 CORS/);
+  await assert.rejects(fetchLatestFirmware(async () => ({ ok: false, status: 404 })), /HTTP 404/);
+});

@@ -17,6 +17,7 @@
 - 自动切图由固件执行，关闭网页或拔掉 USB 后仍可继续。随机顺序默认关闭；开启时随机袋以每轮遍历全部有效图片。上一张按播放历史回退，下一张优先重放前进历史。RAM 中最多保存 6 项（当前及前 5 张），设备重启（包括 PMIC 关机后的冷启动）后历史清空；PMIC 关机不会保留轮播中的临时当前图片，已保存的设置仍保留，随机播放轮次重新开始。
 - USB 闲置超时关闭屏幕并保持控制在线；电池闲置超时和电池供电时的手动 SLEEP 均由 AXP2101 PMIC 软件关机，不进入 ESP32 深睡。USB 熄屏后拔线转为电池供电也会请求 PMIC 关机。两种超时分开设置，0 表示关闭；默认 USB 15 秒、电池 0。POWER 长按启动时间设为 2 秒；网页与设备菜单报告电池百分比及 PMU 实际充电状态，USB 已连接不等于正在充电。
 - 图片转场支持直接切换、淡变、水平推入与低成本径向涟漪；转场进行中再次切图时，旧图/起点取最后一次成功呈现的画面。motion=2/3 切图时，新图从当前自动旋转角或重力角开始显示，自动旋转时钟不中断。涟漪使用较硬的径向边缘换取较低渲染成本。
+- 启动时先完成 PMU、触屏与面板初始化，再在面板可用后显示低成本 RGB565 启动画面；LittleFS 图片 CRC 扫描期间利用既有协作让出点按需推进。背景只全屏绘制一次，后续每帧仅传送 6 个 13×13 RGB565 小块；不增加固定启动等待、不改写照片或设置，并在启动图片/欢迎页接管显示时停止。
 - 图片存储带完整性 CRC；上传与回读另校验传输 CRC。传输失败不会替换原图。
 
 ## 电脑端：HTTPS Web Serial 控制台
@@ -34,7 +35,7 @@
 
 ### 浏览器固件更新（仅 APP 分区）
 
-先在本仓库源码构建：<code>pio run -e picture-badge</code>，使用 <code>.pio/build/picture-badge/firmware.bin</code>。控制台仅用于你审查过源码后自行构建的本机文件；文件选择器、ESP 镜像头 / 段长度与本地 SHA-256 不能认证来源。本页没有固定版本 Release 或可信哈希清单，不提供经过签名验证的发布固件；不要选择来源不明的 .bin。
+云端方式：在控制台点击“获取最新稳定版固件”，页面只访问固定仓库 `ocean-sudo/electronic-badge` 的 GitHub latest Release，将 `firmware.bin` 和 `SHA256SUMS` 下载到浏览器内存。页面显示 Release tag 和 SHA-256；校验清单、固件字节及 ESP32-S3 镜像 / APP 大小边界均通过后，才启用现有 APP-only 刷写按钮。不会将 .bin 保存到本机，也不会自动刷写设备。SHA-256 清单用于检测字节完整性，不是签名或来源真实性证明；只在信任固定仓库及其维护者时使用。若网络、CORS 或校验失败，可选择从已审查源码自行构建的本机 `firmware.bin`。
 
 断开普通控制连接后，按住 BOOT、按下并释放 RESET/EN，再松开 BOOT，手动进入 ESP32-S3 ROM 下载模式；在页面勾选“已进入 ROM 下载模式”和“确认覆盖 APP”后再刷写。页面使用固定版本 esptool-js 0.7.0 / Web Serial，以 no_reset 连接，只将单个应用镜像写入 0x10000，最大 0x300000 字节（应用分区结束 0x310000），并显式设置 eraseAll=false。这不是首次空白设备的初始化流程，不写 bootloader、分区表、NVS 或 LittleFS；安全启动、闪存加密或禁用 ROM 下载模式的设备不保证可用。刷写结束由用户松开 BOOT 并按 RESET/EN，然后点击页面重新连接并读取 STATUS。页面不会尝试自动切换原生 USB 到 ROM 模式。
 此分区表只有一个 `factory` APP 分区，没有 OTA 备用槽或自动回滚。刷写会覆盖唯一可启动应用；刷写期间断电、USB 断连、传输错误或镜像不兼容可能使设备无法启动。恢复可能需要重新手动进入 ROM 下载模式并用正确固件重刷；不要把此功能当作安全的 OTA 更新，也不要在重要/生产设备上试验未知镜像。虽然 `eraseAll=false` 且地址范围排除 LittleFS，esptool 仍须擦除待写 APP 扇区。
@@ -85,7 +86,7 @@ python -m esptool --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write-flash 0
 ```
 
 APP-only 刷写不会改写 LittleFS、NVS、bootloader 或分区表。已有设备升级禁止使用 PlatformIO 整体 upload、uploadfs、整片擦除，或用旧整片镜像覆盖当前设备。固件以 `LittleFS.begin(false)` 挂载，不会自动格式化；不要以格式化来排查挂载问题。
-也可用浏览器控制台替代上面的 `python -m esptool` 命令进行已有设备 APP 更新：先按上文执行 `pio run -e picture-badge`，在 HTTPS 控制台选择本机 `.pio/build/picture-badge/firmware.bin`。仅选择从已审查源码自行构建的文件；文件名、镜像结构检查和页面显示的本地 SHA-256 都不能认证来源，项目没有固定 Release 或可信哈希清单。断开普通控制连接后，按住 BOOT、按下并释放 RESET/EN、再松开 BOOT，手动进入 ESP32-S3 ROM 下载模式；勾选页面的 ROM 模式及覆盖 APP 确认后点击“仅写入 APP 固件”，如弹出串口选择器则选择徽章。完成后松开 BOOT、按 RESET/EN 启动，再在页面重新连接并读取 STATUS。
+也可用浏览器控制台替代上述命令更新已有设备 APP：点击“获取最新稳定版固件”从固定仓库取得并校验 Release；或在网络不可用 / Release 获取失败时选择本机 `.pio/build/picture-badge/firmware.bin`。云端和本机固件都使用同一镜像检查和刷写流程。SHA-256 不是来源真实性认证；确认信任 `ocean-sudo/electronic-badge` 后再继续。断开普通控制连接后，按住 BOOT、按下并释放 RESET/EN、再松开 BOOT，手动进入 ESP32-S3 ROM 下载模式；勾选页面的 ROM 模式及覆盖 APP 确认后点击“仅写入 APP 固件”。下载不会保存为本地文件；页面不会自动刷写，也没有云端中继或远程设备刷写。完成后松开 BOOT、按 RESET/EN 启动，再在页面重新连接并读取 STATUS。
 仅在启动刷写时，页面才需要联网从 `unpkg.com` 加载固定版本 `esptool-js 0.7.0` JavaScript 模块；远端代码会在页面内执行。只对你信任的页面及其外部依赖授权串口。本流程不会将固件或照片上传到 unpkg。
 这仍会覆盖唯一的 `factory` APP 分区；没有 OTA 备用槽或自动回滚。刷写中断电、断连、传输失败或镜像不兼容可能使设备无法启动；恢复时重新进入 ROM 下载模式并使用确认正确的 APP 固件重刷。`eraseAll=false` 只表示不请求整片擦除；esptool 仍会擦除正在写入的 APP 扇区。刷写目标范围不含 LittleFS、NVS、bootloader 或分区表；不要将此流程用于首次空白设备初始化。
 

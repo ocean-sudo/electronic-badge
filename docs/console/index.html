@@ -133,10 +133,11 @@ header{flex-wrap:wrap}.header-status{display:flex;align-items:center;justify-con
 </section>
 <section class="card" id="firmwareUpdate">
 <h2>固件更新 · 仅写 APP 分区</h2>
-<p class="hint">这是通过 ROM 下载器手动刷写，不是 OTA：覆盖设备唯一的 factory APP，没有备用槽或自动回滚。断电、USB 断开或刷写中断可能留下不完整且无法启动的 APP，可能必须重新进入 ROM 下载模式刷写才能恢复。不会整片擦除，也不会写入 bootloader、分区表、NVS 或图片文件系统。</p>
-<label class="filebox" for="firmwareFile">选择本机从已审查仓库源码构建的 firmware.bin<input id="firmwareFile" type="file" accept=".bin,application/octet-stream"><span class="hint">选择项目根目录 .pio/build/picture-badge/firmware.bin；不自动上传，也不代表已验证发布来源。</span></label>
-<p class="hint">开始刷写时才会联网从 <code>unpkg.com</code> 加载固定版本 <code>esptool-js 0.7.0</code> JavaScript 模块；该远端代码会在此页面执行。请仅在信任本页面及其外部依赖时授权串口。模块用于浏览器内串口刷写；本流程不会把固件或照片上传到 unpkg。</p>
-<p id="firmwareInfo" class="statusline" role="status">尚未选择固件。</p>
+<p class="hint">可显式从 ocean-sudo/electronic-badge 的 latest 稳定 Release 获取固件到浏览器内存，或选择本机文件。下载不会保存本地，也不会自动刷写。SHA-256 用于检查字节完整性，不是发布者签名；只有在信任该固定仓库及其维护者时才继续。</p>
+<div class="row"><button id="fetchLatestFirmware" type="button">获取最新稳定版固件</button></div>
+<label class="filebox" for="firmwareFile">或选择本机从已审查仓库源码构建的 firmware.bin<input id="firmwareFile" type="file" accept=".bin,application/octet-stream"><span class="hint">本机回退：选择项目根目录 .pio/build/picture-badge/firmware.bin。</span></label>
+<p class="hint">开始刷写时才会联网从 <code>unpkg.com</code> 加载固定版本 <code>esptool-js 0.7.0</code> JavaScript 模块；该远端代码会在此页面执行。请仅在信任本页面及其外部依赖时授权串口。模块用于浏览器内串口刷写；本流程不会把固件或照片上传到 unpkg。云端固件只下载到浏览器内存；不是远程设备刷写，没有云端中继。</p>
+<p id="firmwareInfo" class="statusline" role="status" aria-live="polite">尚未选择固件。</p>
 <label class="hint"><input id="romModeConfirmed" type="checkbox"> 我已按说明手动进入 ESP32-S3 ROM 下载模式。</label>
 <label class="hint"><input id="flashOverwriteConfirmed" type="checkbox"> 我确认覆盖现有 APP 固件，仅写入本页显示的固定应用分区。</label>
 <p class="hint">刷写前：按住 BOOT，按下并释放 RESET/EN，再松开 BOOT；确认设备在 ROM 下载模式后再继续。此工具不尝试自动拉 BOOT 或复位，不要依赖原生 USB 自动切换。</p>
@@ -396,7 +397,7 @@ class BadgeSerial {
 
 const badgeSerial = new BadgeSerial();
 const serialSupported = 'serial' in navigator && typeof navigator.serial.requestPort === 'function';
-let lastSerialPort = null, firmwareBytes = null, pendingFirmwarePort = null;
+let lastSerialPort = null, firmwareBytes = null, pendingFirmwarePort = null, firmwareLoading = false;
 let esptoolModulePromise = null;
 let firmwareModulePromise = null;
 function loadFirmwareModule() {
@@ -409,19 +410,20 @@ async function sha256Hex(bytes) {
 }
 function updateFirmwareControls() {
   const supported = serialSupported && !!navigator.serial?.requestPort;
-  $('firmwareFile').disabled = busy;
+  $('firmwareFile').disabled = busy || firmwareLoading;
+  $('fetchLatestFirmware').disabled = busy || firmwareLoading;
   $('romModeConfirmed').disabled = busy;
   $('flashOverwriteConfirmed').disabled = busy;
-  $('flashFirmware').disabled = busy || !supported || !firmwareBytes || !$('romModeConfirmed').checked || !$('flashOverwriteConfirmed').checked;
+  $('flashFirmware').disabled = busy || firmwareLoading || !supported || !firmwareBytes || !$('romModeConfirmed').checked || !$('flashOverwriteConfirmed').checked;
   $('flashReconnect').disabled = busy || !pendingFirmwarePort;
 }
 async function selectFirmware() {
   firmwareBytes = null;
-  $('firmwareInfo').textContent = '正在校验固件…';
+  $('firmwareInfo').textContent = '正在校验本机固件…';
+  $('firmwareInfo').classList.remove('error');
   updateFirmwareControls();
   const file = $('firmwareFile').files?.[0];
   if (!file) { $('firmwareInfo').textContent = '尚未选择固件。'; updateFirmwareControls(); return; }
-  $('firmwareInfo').classList.remove('error');
   try {
     if (file.name !== 'firmware.bin') throw new Error('文件名必须为 firmware.bin。');
     const {validateFirmwareFileSize, readFirmwareFile} = await loadFirmwareModule();
@@ -429,12 +431,33 @@ async function selectFirmware() {
     const bytes = await readFirmwareFile(file);
     const hash = await sha256Hex(bytes);
     firmwareBytes = bytes;
-    $('firmwareInfo').textContent = file.name + ' · ' + (bytes.byteLength / 1048576).toFixed(2) + ' MiB · SHA-256 ' + hash;
+    $('firmwareInfo').textContent = '本机 firmware.bin · ' + (bytes.byteLength / 1048576).toFixed(2) + ' MiB · SHA-256 ' + hash + '（本地完整性指纹，不证明来源）';
   } catch (error) {
     $('firmwareInfo').textContent = error.message;
     $('firmwareInfo').classList.add('error');
   }
   updateFirmwareControls();
+}
+async function fetchCloudFirmware() {
+  if (busy || firmwareLoading) return;
+  firmwareBytes = null;
+  firmwareLoading = true;
+  $('firmwareFile').value = '';
+  $('firmwareInfo').classList.remove('error');
+  $('firmwareInfo').textContent = '正在从固定仓库获取 latest Release 并验证 SHA-256…';
+  updateFirmwareControls();
+  try {
+    const {fetchLatestFirmware} = await loadFirmwareModule();
+    const release = await fetchLatestFirmware();
+    firmwareBytes = release.bytes;
+    $('firmwareInfo').textContent = 'Release ' + release.tag + ' · firmware.bin · ' + (release.bytes.byteLength / 1048576).toFixed(2) + ' MiB · SHA-256 ' + release.sha256 + '（字节完整性校验；来源信任固定仓库 ocean-sudo/electronic-badge）';
+  } catch (error) {
+    $('firmwareInfo').textContent = error.message;
+    $('firmwareInfo').classList.add('error');
+  } finally {
+    firmwareLoading = false;
+    updateFirmwareControls();
+  }
 }
 function firmwareLog(text) {
   const status = $('firmwareStatus');
@@ -1244,6 +1267,7 @@ async function connectBadge() {
 }
 $('connect').addEventListener('click',connectBadge);
 $('firmwareFile').addEventListener('change',selectFirmware);
+$('fetchLatestFirmware').addEventListener('click',fetchCloudFirmware);
 $('romModeConfirmed').addEventListener('change',updateFirmwareControls);
 $('flashOverwriteConfirmed').addEventListener('change',updateFirmwareControls);
 $('flashFirmware').addEventListener('click',flashFirmware);

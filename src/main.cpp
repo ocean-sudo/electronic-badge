@@ -18,6 +18,7 @@
 #include "power_off.h"
 #include "picture_animation.h"
 #include "gravity_sensor.h"
+#include "boot_animation.h"
 #include "native_menu.h"
 #include "battery_status.h"
 #include "picture_player.h"
@@ -48,6 +49,7 @@ BadgeQSPI bus(LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
 Arduino_CO5300 gfx(&bus, LCD_RESET, 0, LCD_WIDTH, LCD_HEIGHT, 6, 0, 0, 0);
 PanelScan panelScan;
 PictureAnimation animation(gfx, bus, panelScan);
+badge_boot::Animation bootAnimation;
 bool animationOk = false;
 // getPoint() maps I2C/ACK errors to zero points; zero is not proof of release.
 class SleepAwareTouch final : public TouchDrvCST92xx {
@@ -205,6 +207,17 @@ uint32_t updateCrc(uint32_t crc, const uint8_t *data, size_t length) {
   return crc;
 }
 
+void tickBootAnimation() {
+  if (!displayOk || !bootAnimation.active() || !bootAnimation.tick(millis())) return;
+  auto *pixels = reinterpret_cast<uint16_t *>(frame);
+  for (uint8_t patch = 0; patch < badge_boot::PatchCount; ++patch) {
+    int16_t x, y;
+    if (bootAnimation.renderPatch(patch, pixels, x, y))
+      gfx.draw16bitRGBBitmap(x, y, pixels, badge_boot::PatchExtent, badge_boot::PatchExtent);
+  }
+}
+
+
 void slotPath(unsigned slot, char *path, size_t length) {
   snprintf(path, length, "/slot%u.jpg", slot);
 }
@@ -283,7 +296,7 @@ const char* inspectJpeg(File& file, uint32_t& storedCrc, uint32_t& transferCrc) 
     const size_t count = min(sizeof(ioBuffer), length - integrity.bytes);
     if (file.read(ioBuffer, count) != count) return "storage_read";
     if (!integrity.bytes && !BadgeJpeg::header(ioBuffer, count, length, expected)) return "jpeg_metadata";
-    integrity.append(ioBuffer, count); delay(0);
+    integrity.append(ioBuffer, count); delay(0); tickBootAnimation();
   }
   if (const char* error = integrity.finish(length, expected)) return error;
   storedCrc = integrity.storedCrc(); transferCrc = integrity.transferCrc();
@@ -1311,7 +1324,7 @@ void initStorage() {
         !inspectJpeg(file, storedCrc, transferCrc)) {
       catalog.push_back({static_cast<int32_t>(slot), static_cast<uint32_t>(file.size()), storedCrc, transferCrc});
     }
-    file.close(); delay(0);
+    file.close(); delay(0); tickBootAnimation();
   }
   std::sort(catalog.begin(), catalog.end(), [](const SlotEntry& left, const SlotEntry& right) { return left.slot < right.slot; });
   publishCatalog();
@@ -1393,6 +1406,10 @@ void setup() {
   }
   displayOk = gfx.begin(40000000);
   if (displayOk) { gfx.setBrightness(brightness); enablePanelSync(); delay(50); }
+  if (displayOk && frame) {
+    bootAnimation.start(millis(), reinterpret_cast<uint16_t *>(frame));
+    gfx.draw16bitRGBBitmap(0, 0, reinterpret_cast<uint16_t *>(frame), LCD_WIDTH, LCD_HEIGHT);
+  }
   initStorage();
   player.reset(preferencesOk && preferences.getBool("shuffle", false), -1, catalogIds.data(), catalogIds.size(), esp_random());
   bool shown = false;
@@ -1405,6 +1422,7 @@ void setup() {
       if ((shown = showPicture(entry.slot) == nullptr)) break;
     }
   }
+  bootAnimation.stop();
   if (!shown) drawWelcome();
   resetSlideshowTimer();
   autoSleep.activity(millis());

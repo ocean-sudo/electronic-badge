@@ -1,0 +1,96 @@
+name: Firmware release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable vMAJOR.MINOR.PATCH tag to build and publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        env:
+          REF: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REF" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Ref must use stable vMAJOR.MINOR.PATCH version tags" >&2
+            exit 1
+          fi
+          git init source
+          cd source
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "refs/tags/${REF}:refs/tags/${REF}"
+          git checkout --detach "refs/tags/${REF}"
+          printf '%s\n' "$REF" > "$GITHUB_WORKSPACE/release-tag.txt"
+          printf '%s\n' "$(git rev-parse HEAD)" > "$GITHUB_WORKSPACE/source-commit.txt"
+      - name: Install pinned PlatformIO
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/platformio"
+          "$RUNNER_TEMP/platformio/bin/python" -m pip install platformio==6.1.18
+          echo "$RUNNER_TEMP/platformio/bin" >> "$GITHUB_PATH"
+      - name: Fetch pinned Waveshare source
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --sparse https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75C.git vendor/waveshare
+          git -C vendor/waveshare sparse-checkout set examples/arduino
+          git -C vendor/waveshare checkout --detach 6d19f7e16fb9a3be219e9eed43ca9eb56c88d01c
+      - name: Build firmware
+        working-directory: source
+        run: pio run -e picture-badge
+      - name: Prepare release assets
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          install -m 0644 .pio/build/picture-badge/firmware.bin release/firmware.bin
+          cd release
+          sha256sum firmware.bin > SHA256SUMS
+          {
+            printf 'tag=%s\n' "$(cat "$GITHUB_WORKSPACE/release-tag.txt")"
+            printf 'source_commit=%s\n' "$(cat "$GITHUB_WORKSPACE/source-commit.txt")"
+            printf 'firmware_identity=picture-badge-2 (v2 firmware)\n'
+            printf 'target=ESP32-S3 picture-badge APP image\n'
+            printf 'build_environment=PlatformIO picture-badge; PlatformIO 6.1.18; Ubuntu 24.04 runner Python\n'
+            printf 'vendor_repository=https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75C.git\n'
+            printf 'vendor_commit=6d19f7e16fb9a3be219e9eed43ca9eb56c88d01c\n'
+            printf 'platform_url=https://github.com/pioarduino/platform-espressif32/releases/download/55.03.312-1/platform-espressif32.zip\n'
+            printf 'partition_table=partitions.csv; application address 0x10000; maximum APP image 0x300000 bytes\n'
+            printf 'sha256=%s\n' "$(sha256sum firmware.bin | cut -d ' ' -f 1)"
+          } > BUILD-INFO.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="$(cat "$GITHUB_WORKSPACE/release-tag.txt")"
+          if gh release view "$tag" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to replace its published firmware assets." >&2
+            exit 1
+          fi
+          gh release create "$tag" \
+            --repo "$REPOSITORY" \
+            --verify-tag \
+            --title "$tag" \
+            --notes "Automated firmware build for ESP32-S3 picture-badge. This is an APP-only image for address 0x10000; see BUILD-INFO.txt and SHA256SUMS."
+          gh release upload "$tag" \
+            "$GITHUB_WORKSPACE/source/release/firmware.bin" \
+            "$GITHUB_WORKSPACE/source/release/SHA256SUMS" \
+            "$GITHUB_WORKSPACE/source/release/BUILD-INFO.txt" \
+            --repo "$REPOSITORY"
