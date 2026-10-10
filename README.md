@@ -35,7 +35,7 @@
 
 ### 浏览器固件更新（仅 APP 分区）
 
-云端方式：在控制台点击“获取最新稳定版固件”，页面只访问固定仓库 `ocean-sudo/electronic-badge` 的 GitHub latest Release，将 `firmware.bin` 和 `SHA256SUMS` 下载到浏览器内存。页面显示 Release tag 和 SHA-256；校验清单、固件字节及 ESP32-S3 镜像 / APP 大小边界均通过后，才启用现有 APP-only 刷写按钮。不会将 .bin 保存到本机，也不会自动刷写设备。SHA-256 清单用于检测字节完整性，不是签名或来源真实性证明；只在信任固定仓库及其维护者时使用。若网络、CORS 或校验失败，可选择从已审查源码自行构建的本机 `firmware.bin`。
+云端方式：在控制台点击“获取最新稳定版固件”，页面从固定仓库 `ocean-sudo/electronic-badge` 查询 GitHub latest Release 元数据，并从同源 GitHub Pages 镜像将 `firmware.bin` 和 `SHA256SUMS` 下载到浏览器内存；Pages 工作流每 5 分钟检查并同步最新稳定版。页面显示 Release tag 和 SHA-256；校验清单、固件字节及 ESP32-S3 镜像 / APP 大小边界均通过后，才启用现有 APP-only 刷写按钮。不会将 .bin 保存到本机，也不会自动刷写设备。SHA-256 清单用于检测字节完整性，不是签名或来源真实性证明；只在信任固定仓库及其维护者时使用。Release 刚发布后 Pages 镜像可能需等待下一次自动同步；缺少同源资产时页面会拒绝使用而不会绕过校验。若 Release 元数据网络访问或校验失败，可选择从已审查源码自行构建的本机 `firmware.bin`。
 
 断开普通控制连接后，按住 BOOT、按下并释放 RESET/EN，再松开 BOOT，手动进入 ESP32-S3 ROM 下载模式；在页面勾选“已进入 ROM 下载模式”和“确认覆盖 APP”后再刷写。页面使用固定版本 esptool-js 0.7.0 / Web Serial，以 no_reset 连接，只将单个应用镜像写入 0x10000，最大 0x300000 字节（应用分区结束 0x310000），并显式设置 eraseAll=false。这不是首次空白设备的初始化流程，不写 bootloader、分区表、NVS 或 LittleFS；安全启动、闪存加密或禁用 ROM 下载模式的设备不保证可用。刷写结束由用户松开 BOOT 并按 RESET/EN，然后点击页面重新连接并读取 STATUS。页面不会尝试自动切换原生 USB 到 ROM 模式。
 此分区表只有一个 `factory` APP 分区，没有 OTA 备用槽或自动回滚。刷写会覆盖唯一可启动应用；刷写期间断电、USB 断连、传输错误或镜像不兼容可能使设备无法启动。恢复可能需要重新手动进入 ROM 下载模式并用正确固件重刷；不要把此功能当作安全的 OTA 更新，也不要在重要/生产设备上试验未知镜像。虽然 `eraseAll=false` 且地址范围排除 LittleFS，esptool 仍须擦除待写 APP 扇区。

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { webcrypto } from 'node:crypto';
 import {
   APP_FLASH_ADDRESS,
   APP_FLASH_END,
@@ -8,7 +9,11 @@ import {
   appOnlyFlashOptions,
   readFirmwareFile,
   validateFirmwareFileSize,
-  validateFirmwareImage
+  validateFirmwareImage,
+  LATEST_FIRMWARE_RELEASE_API,
+  RELEASE_FIRMWARE_BASE_URL,
+  fetchLatestFirmware,
+  parseFirmwareChecksum
 } from '../docs/console/firmware_update.mjs';
 
 function validImage(size = 34) {
@@ -90,12 +95,6 @@ test('builds an APP-only, non-erasing write request', () => {
   assert.equal(options.reportProgress, reportProgress);
 });
 
-import { webcrypto } from 'node:crypto';
-import {
-  LATEST_FIRMWARE_RELEASE_API,
-  fetchLatestFirmware,
-  parseFirmwareChecksum
-} from '../docs/console/firmware_update.mjs';
 
 if (!globalThis.crypto?.subtle) globalThis.crypto = webcrypto;
 
@@ -130,7 +129,7 @@ function response(body) {
   return { ok: true, async json() { return body; } };
 }
 
-test('downloads only fixed repository URLs and verifies release bytes before image validation', async () => {
+test('downloads the same-origin Pages mirror and verifies release bytes before image validation', async () => {
   const bytes = validImage();
   const checksum = await sha256(bytes);
   const urls = [];
@@ -146,7 +145,7 @@ test('downloads only fixed repository URLs and verifies release bytes before ima
   assert.equal(result.sha256, checksum);
   assert.deepEqual(result.bytes, bytes);
   assert.equal(urls[0], LATEST_FIRMWARE_RELEASE_API);
-  assert(urls.every(url => url.startsWith('https://api.github.com/repos/ocean-sudo/electronic-badge/') || url.startsWith('https://github.com/ocean-sudo/electronic-badge/releases/download/v2.0.0/')));
+  assert(urls.every(url => url === LATEST_FIRMWARE_RELEASE_API || url.startsWith(new URL('v2.0.0/', RELEASE_FIRMWARE_BASE_URL).href)));
   assert.equal(urls.some(url => url.includes('untrusted.invalid')), false);
 });
 

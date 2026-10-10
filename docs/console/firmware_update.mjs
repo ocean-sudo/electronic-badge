@@ -3,7 +3,7 @@ export const APP_FLASH_END = 0x310000;
 export const APP_FLASH_MAX_BYTES = APP_FLASH_END - APP_FLASH_ADDRESS;
 export const ESP32_S3_IMAGE_CHIP_ID = 9;
 export const LATEST_FIRMWARE_RELEASE_API = 'https://api.github.com/repos/ocean-sudo/electronic-badge/releases/latest';
-const RELEASE_DOWNLOAD_BASE = 'https://github.com/ocean-sudo/electronic-badge/releases/download';
+export const RELEASE_FIRMWARE_BASE_URL = new URL('./firmware/', import.meta.url).href;
 const ESP_IMAGE_HEADER_BYTES = 24;
 const ESP_IMAGE_MIN_BYTES = 32;
 const RELEASE_ASSET_NAMES = ['firmware.bin', 'SHA256SUMS', 'BUILD-INFO.txt'];
@@ -104,12 +104,15 @@ export async function fetchLatestFirmware(fetchImpl = globalThis.fetch) {
   }
 
   const download = async name => {
-    const url = `${RELEASE_DOWNLOAD_BASE}/${encodeURIComponent(release.tag_name)}/${name}`;
+    const url = new URL(`${encodeURIComponent(release.tag_name)}/${name}`, RELEASE_FIRMWARE_BASE_URL).href;
     let response;
     try {
       response = await fetchImpl(url, { cache: 'no-store' });
     } catch {
-      throw new Error(`无法下载固定仓库的 ${name}（网络或 CORS 错误）；可改用本机固件文件。`);
+      throw new Error(`无法下载同源 GitHub Pages 固件镜像中的 ${name}（新版本可能正在自动同步）；拒绝使用未验证资产。`);
+    }
+    if (response?.status === 404) {
+      throw new Error(`GitHub Pages 尚未同步 ${name}；Release 发布后会自动同步，拒绝使用未验证资产。`);
     }
     return readOkResponse(response, name);
   };
