@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/platformio"
-          "$RUNNER_TEMP/platformio/bin/python" -m pip install platformio==6.1.18
+          "$RUNNER_TEMP/platformio/bin/python" -m pip install platformio==6.2.0
           echo "$RUNNER_TEMP/platformio/bin" >> "$GITHUB_PATH"
       - name: Fetch pinned Waveshare source
         working-directory: source
@@ -66,7 +66,7 @@ jobs:
             printf 'source_commit=%s\n' "$(cat "$GITHUB_WORKSPACE/source-commit.txt")"
             printf 'firmware_identity=picture-badge-2 (v2 firmware)\n'
             printf 'target=ESP32-S3 picture-badge APP image\n'
-            printf 'build_environment=PlatformIO picture-badge; PlatformIO 6.1.18; Ubuntu 24.04 runner Python\n'
+            printf 'build_environment=PlatformIO picture-badge; PlatformIO 6.2.0; Ubuntu 24.04 runner Python\n'
             printf 'vendor_repository=https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.75C.git\n'
             printf 'vendor_commit=6d19f7e16fb9a3be219e9eed43ca9eb56c88d01c\n'
             printf 'platform_url=https://github.com/pioarduino/platform-espressif32/releases/download/55.03.312-1/platform-espressif32.zip\n'
